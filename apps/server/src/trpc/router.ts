@@ -2,14 +2,17 @@ import { initTRPC, TRPCError } from '@trpc/server'
 import {
   CandidateDtoSchema,
   DbHealthSchema,
+  EditableIdeaFieldsSchema,
   GenerationEventSchema,
   GenerationRunSchema,
   GraphEdgeSchema,
   GraphNodeSchema,
   HealthStatusSchema,
   MockScenarioSchema,
+  OperatorOptionSchema,
   ProjectSchema,
   PromptItemSchema,
+  UnaryOperatorSchema,
 } from '@unfold/shared'
 import { and, eq } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
@@ -19,11 +22,18 @@ import { appendEvent, listEvents } from '../db/event-repository'
 import { events, generationRuns, nodes } from '../db/schema'
 import {
   createProject,
+  expandNode,
   generateInitial,
   GenerationServiceError,
   getProject,
   listProjects,
+  projectOperatorOptions,
 } from '../generation/service'
+import {
+  SteeringError,
+  steerNode,
+  type SteeringAction,
+} from '../generation/steering'
 import { createContext } from './context'
 
 const t = initTRPC.context<ReturnType<typeof createContext>>().create()
@@ -43,6 +53,7 @@ const ProjectGetSchema = z
     nodes: z.array(GraphNodeSchema),
     edges: z.array(GraphEdgeSchema),
     latestRun: GenerationRunSchema.nullable(),
+    latestExpansionRun: GenerationRunSchema.nullable(),
     analysis: z
       .object({
         facts: z.array(PromptItemSchema),
@@ -129,6 +140,41 @@ export const appRouter = t.router({
           throwServiceError(error)
         }
       }),
+    expand: t.procedure
+      .input(
+        z
+          .object({
+            projectId: z.string().uuid(),
+            parentNodeId: z.string().uuid(),
+            operator: UnaryOperatorSchema,
+            assumption: z.string().trim().min(1).optional(),
+            mockScenario: MockScenarioSchema.optional(),
+          })
+          .strict(),
+      )
+      .output(ProjectCreateResultSchema)
+      .mutation(async ({ ctx, input }) => {
+        if (input.mockScenario && env.MODEL_MODE !== 'mock') {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Mock scenarios are only available in mock mode',
+          })
+        }
+        try {
+          const { mockScenario, ...request } = input
+          return {
+            projectId: input.projectId,
+            ...(await expandNode(ctx.getDatabase(), {
+              ...request,
+              mockScenario,
+              modelMode: env.MODEL_MODE,
+              timeoutMs: env.MODEL_TIMEOUT_MS,
+            })),
+          }
+        } catch (error) {
+          throwServiceError(error)
+        }
+      }),
     list: t.procedure
       .output(z.array(ProjectSchema))
       .query(({ ctx }) => listProjects(ctx.getDatabase())),
@@ -142,6 +188,93 @@ export const appRouter = t.router({
           throwServiceError(error)
         }
       }),
+  }),
+  nodes: t.router({
+    operatorOptions: t.procedure
+      .input(
+        z
+          .object({
+            projectId: z.string().uuid(),
+            parentNodeId: z.string().uuid(),
+          })
+          .strict(),
+      )
+      .output(z.array(OperatorOptionSchema))
+      .query(async ({ ctx, input }) => {
+        try {
+          return await projectOperatorOptions(
+            ctx.getDatabase(),
+            input.projectId,
+            input.parentNodeId,
+          )
+        } catch (error) {
+          throwServiceError(error)
+        }
+      }),
+    pin: t.procedure
+      .input(
+        z
+          .object({ projectId: z.string().uuid(), nodeId: z.string().uuid() })
+          .strict(),
+      )
+      .output(z.object({ changed: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        steerRoute(ctx.getDatabase(), 'pin', input),
+      ),
+    unpin: t.procedure
+      .input(
+        z
+          .object({ projectId: z.string().uuid(), nodeId: z.string().uuid() })
+          .strict(),
+      )
+      .output(z.object({ changed: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        steerRoute(ctx.getDatabase(), 'unpin', input),
+      ),
+    reject: t.procedure
+      .input(
+        z
+          .object({ projectId: z.string().uuid(), nodeId: z.string().uuid() })
+          .strict(),
+      )
+      .output(z.object({ changed: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        steerRoute(ctx.getDatabase(), 'reject', input),
+      ),
+    archive: t.procedure
+      .input(
+        z
+          .object({ projectId: z.string().uuid(), nodeId: z.string().uuid() })
+          .strict(),
+      )
+      .output(z.object({ changed: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        steerRoute(ctx.getDatabase(), 'archive', input),
+      ),
+    setActive: t.procedure
+      .input(
+        z
+          .object({ projectId: z.string().uuid(), nodeId: z.string().uuid() })
+          .strict(),
+      )
+      .output(z.object({ changed: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        steerRoute(ctx.getDatabase(), 'setActive', input),
+      ),
+    edit: t.procedure
+      .input(
+        z
+          .object({
+            projectId: z.string().uuid(),
+            nodeId: z.string().uuid(),
+            fields: EditableIdeaFieldsSchema,
+          })
+          .strict(),
+      )
+      .output(z.object({ changed: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        steerRoute(ctx.getDatabase(), 'edit', input),
+      ),
   }),
   events: t.router({
     slateDisplayed: t.procedure
@@ -264,6 +397,12 @@ export const appRouter = t.router({
 })
 
 function throwServiceError(error: unknown): never {
+  if (error instanceof SteeringError) {
+    throw new TRPCError({
+      code: error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'BAD_REQUEST',
+      message: error.message,
+    })
+  }
   if (error instanceof GenerationServiceError) {
     throw new TRPCError({
       code: error.code,
@@ -271,6 +410,18 @@ function throwServiceError(error: unknown): never {
     })
   }
   throw error
+}
+
+async function steerRoute(
+  connection: ReturnType<ReturnType<typeof createContext>['getDatabase']>,
+  action: SteeringAction,
+  input: { projectId: string; nodeId: string; fields?: unknown },
+) {
+  try {
+    return await steerNode(connection, action, input)
+  } catch (error) {
+    throwServiceError(error)
+  }
 }
 
 export type AppRouter = typeof appRouter

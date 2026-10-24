@@ -7,8 +7,10 @@ import {
   type GraphEdgeDto,
   type GraphNodeDto,
   type PromptItemDto,
+  type UnaryOperator,
+  type IdeaContent,
 } from '@unfold/shared'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import type { DatabaseConnection } from '../db/client'
 import { appendEvent } from '../db/event-repository'
@@ -26,6 +28,8 @@ import type { ModelMode } from '@unfold/shared'
 import { createModelProvider, ProviderError } from '../model/provider'
 import { applyGraphPatch, GraphPatchError } from '../graph/patch'
 import {
+  EXPANSION_SELECTION_POLICY_VERSION,
+  expandPipeline,
   generatePipeline,
   PipelineError,
   SCHEMA_VERSION,
@@ -35,9 +39,22 @@ import {
 } from './pipeline'
 import {
   EVALUATE_PROMPT_VERSION,
+  EXPAND_PROMPT_VERSION,
+  EXPAND_SCHEMA_VERSION,
   EXTRACT_PROMPT_VERSION,
   FRAME_PROMPT_VERSION,
 } from './prompts'
+import {
+  OPERATOR_REGISTRY,
+  OPERATOR_REGISTRY_VERSION,
+  getOperatorOptions,
+  type ParentContext,
+} from '../operators/registry'
+import {
+  computePlanningFeatures,
+  PLANNING_FEATURES_VERSION,
+  SUITABILITY_VERSION,
+} from '../operators/planning'
 
 export class GenerationServiceError extends Error {
   constructor(
@@ -206,6 +223,8 @@ export async function generateInitial(
     await applyGraphPatch(db, {
       projectId: options.projectId,
       runId,
+      origin: 'INITIAL_FRAME',
+      operator: null,
       ops: selected.map((candidate) => ({
         op: 'ADD_IDEA',
         candidateId: candidate.id,
@@ -249,6 +268,341 @@ export async function generateInitial(
         payload: { code, message },
         dedupeKey: null,
         createdAt: new Date(),
+      })
+    })
+    return { runId, status: 'FAILED' as const, errorCode: code }
+  }
+}
+
+export async function projectOperatorOptions(
+  connection: DatabaseConnection,
+  projectId: string,
+  parentNodeId: string,
+) {
+  const { db } = connection
+  const [parent] = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, parentNodeId), eq(nodes.projectId, projectId)))
+    .limit(1)
+  if (!parent) throw new GenerationServiceError('Node not found', 'NOT_FOUND')
+  const [projectNodes, projectEdges] = await Promise.all([
+    db.select().from(nodes).where(eq(nodes.projectId, projectId)),
+    db.select().from(edges).where(eq(edges.projectId, projectId)),
+  ])
+  const context: ParentContext = {
+    id: parent.id,
+    type: parent.type,
+    status: parent.status,
+    operator: parent.operator,
+    content: parent.content,
+  }
+  const graph = { nodes: projectNodes, edges: projectEdges }
+  return getOperatorOptions({ parents: [context] }, () =>
+    computePlanningFeatures(graph, parentNodeId),
+  )
+}
+
+export async function expandNode(
+  connection: DatabaseConnection,
+  options: {
+    projectId: string
+    parentNodeId: string
+    operator: UnaryOperator
+    assumption?: string
+    mockScenario?: MockScenario
+    modelMode: ModelMode
+    timeoutMs: number
+  },
+) {
+  const { db } = connection
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, options.projectId))
+    .limit(1)
+  if (!project)
+    throw new GenerationServiceError('Project not found', 'NOT_FOUND')
+  const [parent] = await db
+    .select()
+    .from(nodes)
+    .where(
+      and(
+        eq(nodes.id, options.parentNodeId),
+        eq(nodes.projectId, options.projectId),
+      ),
+    )
+    .limit(1)
+  if (!parent) throw new GenerationServiceError('Node not found', 'NOT_FOUND')
+  const [initialRun] = await db
+    .select()
+    .from(generationRuns)
+    .where(
+      and(
+        eq(generationRuns.projectId, options.projectId),
+        eq(generationRuns.kind, 'INITIAL'),
+        eq(generationRuns.status, 'SUCCEEDED'),
+      ),
+    )
+    .orderBy(desc(generationRuns.startedAt))
+    .limit(1)
+  if (!initialRun)
+    throw new GenerationServiceError(
+      'A successful initial generation is required',
+      'BAD_REQUEST',
+    )
+  const parentContext: ParentContext = {
+    id: parent.id,
+    type: parent.type,
+    status: parent.status,
+    operator: parent.operator,
+    content: parent.content,
+  }
+  const precondition = OPERATOR_REGISTRY[options.operator].precondition({
+    parents: [parentContext],
+    assumption: options.assumption,
+  })
+  if (!precondition.eligible)
+    throw new GenerationServiceError(
+      precondition.reason ?? 'Operator is not eligible for this node',
+      'BAD_REQUEST',
+    )
+  const [projectNodes, projectEdges] = await Promise.all([
+    db.select().from(nodes).where(eq(nodes.projectId, options.projectId)),
+    db.select().from(edges).where(eq(edges.projectId, options.projectId)),
+  ])
+  const planningFeatures = computePlanningFeatures(
+    { nodes: projectNodes, edges: projectEdges },
+    parent.id,
+  )
+  const suitability =
+    OPERATOR_REGISTRY[options.operator].suitability(planningFeatures)
+  const analysis = await db
+    .select()
+    .from(promptAnalyses)
+    .where(eq(promptAnalyses.runId, initialRun.id))
+    .limit(1)
+  const promptRows = analysis[0]
+    ? await db
+        .select()
+        .from(promptItems)
+        .where(eq(promptItems.analysisId, analysis[0].id))
+    : []
+  const facts = promptRows
+    .filter((item) => item.kind === 'FACT')
+    .map((item) => ({
+      ref: item.ref,
+      text: item.text,
+      evidence: item.evidenceText,
+    }))
+  const constraints = promptRows
+    .filter((item) => item.kind === 'CONSTRAINT')
+    .map((item) => ({
+      ref: item.ref,
+      text: item.text,
+      evidence: item.evidenceText,
+      strength: item.strength as 'hard' | 'soft',
+      basis: item.basis as 'explicit' | 'inferred',
+    }))
+  const trustedAssumption = options.assumption ?? precondition.assumptions[0]
+  const provider = createModelProvider(
+    { MODEL_MODE: options.modelMode },
+    { mockScenario: options.mockScenario },
+  )
+  const runId = randomUUID()
+  const startedAt = new Date()
+  const planningMetadata = {
+    version: PLANNING_FEATURES_VERSION,
+    suitabilityVersion: SUITABILITY_VERSION,
+    features: planningFeatures,
+    suitability: suitability.score,
+    adjustments: suitability.breakdown,
+  }
+  await db.insert(generationRuns).values({
+    id: runId,
+    projectId: options.projectId,
+    kind: 'EXPANSION',
+    status: 'RUNNING',
+    modelProvider: provider.identity.provider,
+    modelName: provider.identity.model,
+    promptVersions: { expand: EXPAND_PROMPT_VERSION },
+    operator: options.operator,
+    parentNodeId: parent.id,
+    operatorRegistryVersion: OPERATOR_REGISTRY_VERSION,
+    planningFeatures: planningMetadata,
+    schemaVersion: EXPAND_SCHEMA_VERSION,
+    selectionPolicyVersion: EXPANSION_SELECTION_POLICY_VERSION,
+    dedupMode: null,
+    degraded: false,
+    attempts: [],
+    errorCode: null,
+    errorMessage: null,
+    mockScenario: options.mockScenario ?? null,
+    startedAt,
+    finishedAt: null,
+  })
+  let attempts: PipelineAttempt[] = []
+  try {
+    const pipeline = await expandPipeline({
+      operator: options.operator,
+      parent: parent.content as IdeaContent,
+      rootPrompt: project.originalPrompt,
+      facts,
+      constraints,
+      assumption: trustedAssumption,
+      mechanism: String(parent.content.mechanism ?? ''),
+      suitabilityScore: suitability.score,
+      provider,
+      timeoutMs: options.timeoutMs,
+    })
+    attempts = pipeline.attempts
+    const existingChildren = await db
+      .select({ node: nodes })
+      .from(edges)
+      .innerJoin(nodes, eq(nodes.id, edges.childId))
+      .where(eq(edges.parentId, parent.id))
+    for (const candidate of pipeline.candidates) {
+      const duplicate = existingChildren.find(
+        ({ node }) =>
+          normalizeDuplicateText(node.title) ===
+            normalizeDuplicateText(candidate.content.title) &&
+          normalizeDuplicateText(node.summary) ===
+            normalizeDuplicateText(candidate.content.summary),
+      )
+      if (duplicate) {
+        candidate.selectionState = 'DUPLICATE'
+        candidate.selectionScore = null
+        candidate.displayPosition = null
+        candidate.selectionMetadata = {
+          ...candidate.selectionMetadata,
+          duplicateOfNodeId: duplicate.node.id,
+        }
+      }
+    }
+    const factIdByRef = new Map(
+      promptRows
+        .filter((item) => item.kind === 'FACT')
+        .map((item) => [item.ref, item.id]),
+    )
+    await db.transaction(async (tx) => {
+      for (const candidate of pipeline.candidates) {
+        await tx.insert(candidates).values({
+          id: candidate.id,
+          projectId: options.projectId,
+          runId,
+          ordinal: candidate.ordinal,
+          modelKey: candidate.content.key,
+          content: candidate.content,
+          operator: options.operator,
+          operatorRegistryVersion: OPERATOR_REGISTRY_VERSION,
+          suitabilityScore: suitability.score,
+          planningMetadata,
+          constraintEvaluations: candidate.evaluation.constraints,
+          quality: {
+            intentAlignment: candidate.evaluation.intentAlignment,
+            usefulness: candidate.evaluation.usefulness,
+            specificity: candidate.evaluation.specificity,
+          },
+          completeness: candidate.completeness,
+          genericFirstTest: candidate.genericFirstTest,
+          eligibility: candidate.eligibility,
+          rejectionReasons: candidate.rejectionReasons,
+          qualityScore: candidate.qualityScore,
+          duplicateOfCandidateId: candidate.duplicateOfCandidateId,
+          dedupSimilarity: candidate.dedupSimilarity,
+          selectionState: candidate.selectionState,
+          selectionScore: candidate.selectionScore,
+          displayPosition: candidate.displayPosition,
+          selectionProbability: candidate.selectionProbability,
+          selectionMetadata: {
+            ...candidate.selectionMetadata,
+            ...planningMetadata,
+            duplicateOfNodeId:
+              candidate.selectionMetadata.duplicateOfNodeId ?? null,
+          },
+          promptVersion: EXPAND_PROMPT_VERSION,
+          schemaVersion: EXPAND_SCHEMA_VERSION,
+          policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
+          nodeId: null,
+        })
+        await tx.insert(hypotheses).values({
+          id: randomUUID(),
+          projectId: options.projectId,
+          runId,
+          candidateId: candidate.id,
+          statement: candidate.content.hypothesis.statement,
+          axes: candidate.content.hypothesis.axes,
+          assumptions: candidate.content.hypothesis.assumptions,
+          supportingFactIds:
+            candidate.content.hypothesis.supportingFactRefs.flatMap((ref) =>
+              factIdByRef.has(ref) ? [factIdByRef.get(ref)!] : [],
+            ),
+          counterevidence: candidate.content.hypothesis.counterevidence,
+          falsifiers: candidate.content.hypothesis.falsifiers,
+        })
+      }
+      await tx
+        .update(generationRuns)
+        .set({
+          attempts: pipeline.attempts,
+          dedupMode: pipeline.dedupMode,
+          degraded: pipeline.degraded,
+        })
+        .where(eq(generationRuns.id, runId))
+    })
+    const selected = pipeline.candidates
+      .filter((candidate) => candidate.selectionState === 'SELECTED')
+      .sort((left, right) => left.displayPosition! - right.displayPosition!)
+    await applyGraphPatch(db, {
+      projectId: options.projectId,
+      runId,
+      origin: 'OPERATOR_EXPANSION',
+      operator: options.operator,
+      ops: selected.map((candidate) => ({
+        op: 'ADD_IDEA',
+        candidateId: candidate.id,
+        parentNodeIds: [parent.id],
+        displayPosition: candidate.displayPosition!,
+      })),
+    })
+    return { runId, status: 'SUCCEEDED' as const, errorCode: null }
+  } catch (error) {
+    const code =
+      error instanceof PipelineError
+        ? error.code
+        : error instanceof GraphPatchError
+          ? error.code
+          : error instanceof ProviderError
+            ? error.code
+            : 'GENERATION_FAILED'
+    const message = error instanceof Error ? error.message : 'Expansion failed'
+    if (error instanceof PipelineError) attempts = error.attempts
+    else if (!attempts.length)
+      attempts = [{ task: 'expand', ok: false, code, message }]
+    await db.transaction(async (tx) => {
+      await tx
+        .update(generationRuns)
+        .set({
+          status: 'FAILED',
+          attempts,
+          errorCode: code,
+          errorMessage: message,
+          finishedAt: new Date(),
+        })
+        .where(eq(generationRuns.id, runId))
+      await appendEvent(tx, {
+        id: randomUUID(),
+        projectId: options.projectId,
+        runId,
+        nodeId: parent.id,
+        type: 'GENERATION_FAILED',
+        payload: {
+          code,
+          message,
+          operator: options.operator,
+          parentNodeId: parent.id,
+        },
+        dedupeKey: null,
       })
     })
     return { runId, status: 'FAILED' as const, errorCode: code }
@@ -366,7 +720,23 @@ export async function getProject(
   const [latestRun] = await db
     .select()
     .from(generationRuns)
-    .where(eq(generationRuns.projectId, projectId))
+    .where(
+      and(
+        eq(generationRuns.projectId, projectId),
+        eq(generationRuns.kind, 'INITIAL'),
+      ),
+    )
+    .orderBy(desc(generationRuns.startedAt))
+    .limit(1)
+  const [latestExpansionRun] = await db
+    .select()
+    .from(generationRuns)
+    .where(
+      and(
+        eq(generationRuns.projectId, projectId),
+        eq(generationRuns.kind, 'EXPANSION'),
+      ),
+    )
     .orderBy(desc(generationRuns.startedAt))
     .limit(1)
   const projectNodes = await db
@@ -391,18 +761,18 @@ export async function getProject(
         .from(promptItems)
         .where(eq(promptItems.analysisId, analysis[0].id))
     : []
-  const candidateRows = latestRun
-    ? await db
-        .select()
-        .from(candidates)
-        .where(eq(candidates.runId, latestRun.id))
-        .orderBy(candidates.ordinal)
-    : []
+  const candidateRows = await db
+    .select({ candidate: candidates })
+    .from(candidates)
+    .innerJoin(generationRuns, eq(generationRuns.id, candidates.runId))
+    .where(eq(generationRuns.projectId, projectId))
+    .orderBy(desc(generationRuns.startedAt), candidates.ordinal)
+  const candidateIds = candidateRows.map(({ candidate }) => candidate.id)
   const hypothesisRows = candidateRows.length
     ? await db
         .select()
         .from(hypotheses)
-        .where(eq(hypotheses.runId, latestRun!.id))
+        .where(inArray(hypotheses.candidateId, candidateIds))
     : []
   const constraintItems = new Map(
     items
@@ -412,49 +782,70 @@ export async function getProject(
   const hypothesisByCandidateId = new Map(
     hypothesisRows.map((hypothesis) => [hypothesis.candidateId, hypothesis]),
   )
-  const candidateDtos: CandidateDto[] = candidateRows.flatMap((candidate) => {
-    const hypothesis = hypothesisByCandidateId.get(candidate.id)
-    if (!hypothesis) return []
-    return [
-      {
-        id: candidate.id,
-        ordinal: candidate.ordinal,
-        content: candidate.content,
-        constraintEvaluations: candidate.constraintEvaluations.map((result) => {
-          const constraint = constraintItems.get(result.constraintRef)
-          return {
-            ...result,
-            ...(constraint
-              ? {
-                  text: constraint.text,
-                  strength: constraint.strength as 'hard' | 'soft',
-                }
-              : {}),
-          }
-        }),
-        quality: candidate.quality,
-        qualityScore: candidate.qualityScore,
-        eligibility: candidate.eligibility,
-        rejectionReasons: candidate.rejectionReasons,
-        selectionState: candidate.selectionState,
-        displayPosition: candidate.displayPosition,
-        hypothesis: {
-          statement: hypothesis.statement,
-          axes: hypothesis.axes,
-          assumptions: hypothesis.assumptions,
-          supportingFactRefs: candidate.content.hypothesis.supportingFactRefs,
-          counterevidence: hypothesis.counterevidence,
-          falsifiers: hypothesis.falsifiers,
+  const candidateDtos: CandidateDto[] = candidateRows.flatMap(
+    ({ candidate }) => {
+      const hypothesis = hypothesisByCandidateId.get(candidate.id)
+      if (!hypothesis) return []
+      const selectionMetadata = candidate.selectionMetadata as Record<
+        string,
+        unknown
+      >
+      return [
+        {
+          id: candidate.id,
+          runId: candidate.runId,
+          ordinal: candidate.ordinal,
+          operator: candidate.operator,
+          operatorRegistryVersion: candidate.operatorRegistryVersion,
+          suitabilityScore: candidate.suitabilityScore,
+          selectionScore: candidate.selectionScore,
+          planningMetadata: candidate.planningMetadata,
+          duplicateOfNodeId:
+            typeof selectionMetadata.duplicateOfNodeId === 'string'
+              ? selectionMetadata.duplicateOfNodeId
+              : null,
+          content: candidate.content,
+          constraintEvaluations: candidate.constraintEvaluations.map(
+            (result) => {
+              const constraint = constraintItems.get(result.constraintRef)
+              return {
+                ...result,
+                ...(constraint
+                  ? {
+                      text: constraint.text,
+                      strength: constraint.strength as 'hard' | 'soft',
+                    }
+                  : {}),
+              }
+            },
+          ),
+          quality: candidate.quality,
+          qualityScore: candidate.qualityScore,
+          eligibility: candidate.eligibility,
+          rejectionReasons: candidate.rejectionReasons,
+          selectionState: candidate.selectionState,
+          displayPosition: candidate.displayPosition,
+          hypothesis: {
+            statement: hypothesis.statement,
+            axes: hypothesis.axes,
+            assumptions: hypothesis.assumptions,
+            supportingFactRefs: candidate.content.hypothesis.supportingFactRefs,
+            counterevidence: hypothesis.counterevidence,
+            falsifiers: hypothesis.falsifiers,
+          },
         },
-      },
-    ]
-  })
+      ]
+    },
+  )
 
   return {
     project: toProjectDto(project),
     nodes: projectNodes.map(toNodeDto),
     edges: projectEdges.map(toEdgeDto),
     latestRun: latestRun ? toRunDto(latestRun) : null,
+    latestExpansionRun: latestExpansionRun
+      ? toRunDto(latestExpansionRun)
+      : null,
     analysis: {
       facts: items.filter((item) => item.kind === 'FACT').map(toPromptItemDto),
       constraints: items
@@ -472,6 +863,7 @@ export function toProjectDto(
     id: project.id,
     title: project.title,
     originalPrompt: project.originalPrompt,
+    activeNodeId: project.activeNodeId,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
   }
@@ -490,7 +882,10 @@ function toNodeDto(node: typeof nodes.$inferSelect): GraphNodeDto {
     summary: node.summary,
     content: node.content,
     displayPosition: node.displayPosition,
+    status: node.status,
+    userEdited: node.userEdited,
     createdAt: node.createdAt.toISOString(),
+    updatedAt: node.updatedAt.toISOString(),
   }
 }
 
@@ -514,6 +909,10 @@ function toRunDto(run: typeof generationRuns.$inferSelect): GenerationRunDto {
     modelProvider: run.modelProvider,
     modelName: run.modelName,
     promptVersions: run.promptVersions,
+    operator: run.operator,
+    parentNodeId: run.parentNodeId,
+    operatorRegistryVersion: run.operatorRegistryVersion,
+    planningFeatures: run.planningFeatures,
     schemaVersion: run.schemaVersion,
     selectionPolicyVersion: run.selectionPolicyVersion,
     dedupMode: run.dedupMode,
@@ -539,4 +938,8 @@ function toPromptItemDto(item: typeof promptItems.$inferSelect): PromptItemDto {
     strength: item.strength,
     basis: item.basis,
   }
+}
+
+function normalizeDuplicateText(value: string) {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ')
 }

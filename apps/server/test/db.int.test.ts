@@ -12,6 +12,7 @@ import { runMigrations } from '../src/db/migrate'
 import { appRouter } from '../src/trpc/router'
 import { createContext } from '../src/trpc/context'
 import { applyGraphPatch, GraphPatchError } from '../src/graph/patch'
+import { IdeaContentSchema } from '@unfold/shared'
 
 const databaseUrl =
   process.env.DATABASE_URL_TEST ??
@@ -192,6 +193,433 @@ describe('MySQL integration', () => {
     expect(projectEvents.map((event) => event.type)).toContain(
       'GENERATION_FAILED',
     )
+  })
+
+  it('expands an idea and persists steering state and edits', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    const options = await caller.nodes.operatorOptions({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+    })
+    expect(options.map((option) => option.operator)).toEqual([
+      'GROUND',
+      'REFRAME',
+      'LEAP',
+      'INVERT',
+      'TRANSPLANT',
+    ])
+
+    const expanded = await caller.projects.expand({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+    })
+    expect(expanded.status).toBe('SUCCEEDED')
+    const project = await caller.projects.get({ id: created.projectId })
+    const originalEdges = project.edges
+    const expansionRun = project.latestExpansionRun!
+    expect(expansionRun.kind).toBe('EXPANSION')
+    expect(expansionRun.operator).toBe('GROUND')
+    const child = project.nodes.find((node) => node.runId === expansionRun.id)!
+    expect(child.operator).toBe('GROUND')
+    expect(child.status).toBe('VISIBLE')
+
+    const originalCandidate = project.candidates.find(
+      (candidate) => candidate.id === child.candidateId,
+    )
+    await caller.nodes.pin({ projectId: created.projectId, nodeId: child.id })
+    await caller.nodes.unpin({ projectId: created.projectId, nodeId: child.id })
+    await caller.nodes.pin({ projectId: created.projectId, nodeId: child.id })
+    const pinned = await caller.projects.get({ id: created.projectId })
+    expect(pinned.nodes.find((node) => node.id === child.id)?.status).toBe(
+      'PINNED',
+    )
+    const content = IdeaContentSchema.parse(child.content)
+    await caller.nodes.edit({
+      projectId: created.projectId,
+      nodeId: child.id,
+      fields: {
+        title: 'Edited operator direction',
+        summary: content.summary,
+        preservedIntent: content.preservedIntent,
+        changedAssumptions: content.changedAssumptions,
+        fitRationale: content.fitRationale,
+        strongestObjection: content.strongestObjection,
+        firstTest: content.firstTest,
+        mechanism: content.mechanism,
+        facets: content.facets,
+      },
+    })
+    const edited = await caller.projects.get({ id: created.projectId })
+    expect(edited.nodes.find((node) => node.id === child.id)).toMatchObject({
+      title: 'Edited operator direction',
+      userEdited: true,
+    })
+    expect(
+      edited.candidates.find((candidate) => candidate.id === child.candidateId),
+    ).toEqual(originalCandidate)
+    expect(edited.edges).toEqual(originalEdges)
+    await caller.nodes.setActive({
+      projectId: created.projectId,
+      nodeId: child.id,
+    })
+    await caller.nodes.reject({
+      projectId: created.projectId,
+      nodeId: child.id,
+    })
+    const rejected = await caller.projects.get({ id: created.projectId })
+    expect(rejected.nodes.find((node) => node.id === child.id)?.status).toBe(
+      'REJECTED',
+    )
+    expect(rejected.project.activeNodeId).toBe(parent.id)
+    const eventsAfterSteering = await caller.events.list({
+      projectId: created.projectId,
+    })
+    expect(eventsAfterSteering.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        'NODE_PINNED',
+        'NODE_EDITED',
+        'ACTIVE_NODE_CHANGED',
+        'NODE_REJECTED',
+      ]),
+    )
+    expect(
+      eventsAfterSteering.find((event) => event.type === 'NODE_EDITED')
+        ?.payload,
+    ).toMatchObject({ changedFields: expect.arrayContaining(['title']) })
+    await caller.nodes.setActive({
+      projectId: created.projectId,
+      nodeId: parent.id,
+    })
+    await caller.nodes.reject({
+      projectId: created.projectId,
+      nodeId: parent.id,
+    })
+    const clearedActive = await caller.projects.get({ id: created.projectId })
+    expect(clearedActive.project.activeNodeId).toBeNull()
+  })
+
+  it.each(['GROUND', 'REFRAME', 'LEAP', 'INVERT', 'TRANSPLANT'] as const)(
+    'persists all expansion metadata and one-parent lineage for %s',
+    async (operator) => {
+      const caller = appRouter.createCaller(createContext(databaseUrl))
+      const created = await caller.projects.create({
+        prompt: 'I want to test a neighborhood bakery.',
+      })
+      const initial = await caller.projects.get({ id: created.projectId })
+      const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+      const operatorOptions = await caller.nodes.operatorOptions({
+        projectId: created.projectId,
+        parentNodeId: parent.id,
+      })
+      const assumption = operatorOptions.find(
+        (option) => option.operator === 'INVERT',
+      )?.assumptions[0]
+      const result = await caller.projects.expand({
+        projectId: created.projectId,
+        parentNodeId: parent.id,
+        operator,
+        ...(operator === 'INVERT' && assumption ? { assumption } : {}),
+      })
+      expect(result.status).toBe('SUCCEEDED')
+      const project = await caller.projects.get({ id: created.projectId })
+      const run = project.latestExpansionRun!
+      const runCandidates = project.candidates.filter(
+        (candidate) => candidate.runId === run.id,
+      )
+      const selected = runCandidates.filter(
+        (candidate) => candidate.selectionState === 'SELECTED',
+      )
+      const createdNodes = project.nodes.filter((node) => node.runId === run.id)
+      const createdEdges = project.edges.filter((edge) => edge.runId === run.id)
+
+      expect(run.operator).toBe(operator)
+      expect(run.operatorRegistryVersion).toBe('operators-v1')
+      expect(run.promptVersions.expand).toBe('expand-v1')
+      expect(run.schemaVersion).toBe('expand-v1')
+      expect(run.selectionPolicyVersion).toBe('expansion-mmr-v1')
+      expect(runCandidates).toHaveLength(6)
+      expect(selected.length).toBeGreaterThanOrEqual(1)
+      expect(selected.length).toBeLessThanOrEqual(3)
+      expect(
+        selected.every((candidate) => candidate.operator === operator),
+      ).toBe(true)
+      const { db } = getDatabase(databaseUrl)
+      const persisted = await db
+        .select()
+        .from(candidates)
+        .where(eq(candidates.runId, run.id))
+      expect(persisted).toHaveLength(6)
+      expect(
+        persisted.every(
+          (candidate) =>
+            typeof candidate.qualityScore === 'number' &&
+            Array.isArray(candidate.rejectionReasons) &&
+            candidate.selectionState !== null &&
+            candidate.selectionMetadata !== null &&
+            candidate.planningMetadata !== null &&
+            candidate.operatorRegistryVersion === 'operators-v1',
+        ),
+      ).toBe(true)
+      expect(
+        selected.every(
+          (candidate) =>
+            candidate.displayPosition !== null &&
+            typeof candidate.selectionScore === 'number' &&
+            candidate.planningMetadata !== null,
+        ),
+      ).toBe(true)
+      expect(createdNodes.length).toBe(selected.length)
+      expect(createdEdges).toHaveLength(selected.length)
+      expect(createdEdges.every((edge) => edge.parentId === parent.id)).toBe(
+        true,
+      )
+      expect(createdNodes.every((node) => node.operator === operator)).toBe(
+        true,
+      )
+    },
+  )
+
+  it('rejects an expansion that duplicates an existing child', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    await caller.projects.expand({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+    })
+    const project = await caller.projects.get({ id: created.projectId })
+    const run = project.latestExpansionRun!
+    const child = project.nodes.find((node) => node.runId === run.id)!
+    const candidate = project.candidates.find(
+      (item) => item.id === child.candidateId,
+    )!
+    const { db } = getDatabase(databaseUrl)
+    await db
+      .update(candidates)
+      .set({ nodeId: null })
+      .where(eq(candidates.id, candidate.id))
+    await db
+      .update(generationRuns)
+      .set({ status: 'RUNNING', finishedAt: null })
+      .where(eq(generationRuns.id, run.id))
+
+    await expect(
+      applyGraphPatch(db, {
+        projectId: created.projectId,
+        runId: run.id,
+        origin: 'OPERATOR_EXPANSION',
+        operator: 'GROUND',
+        ops: [
+          {
+            op: 'ADD_IDEA',
+            candidateId: candidate.id,
+            parentNodeIds: [parent.id],
+            displayPosition: 1,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      message: 'Expansion duplicates an existing child',
+    })
+    const after = await caller.projects.get({ id: created.projectId })
+    expect(after.nodes).toHaveLength(project.nodes.length)
+    expect(after.edges).toHaveLength(project.edges.length)
+  })
+
+  it('rolls back invalid expansion patches and after-node fault injection', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    const otherParent = initial.nodes.find(
+      (node) => node.type === 'IDEA' && node.id !== parent.id,
+    )!
+    await caller.projects.expand({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+    })
+    const expanded = await caller.projects.get({ id: created.projectId })
+    const run = expanded.latestExpansionRun!
+    const runCandidates = expanded.candidates.filter(
+      (candidate) => candidate.runId === run.id,
+    )
+    const selected = runCandidates.find(
+      (candidate) => candidate.selectionState === 'SELECTED',
+    )!
+    const unselected = runCandidates.find(
+      (candidate) => candidate.selectionState !== 'SELECTED',
+    )!
+    const { db } = getDatabase(databaseUrl)
+    await db.transaction(async (tx) => {
+      await tx.delete(edges).where(eq(edges.runId, run.id))
+      await tx.delete(nodes).where(eq(nodes.runId, run.id))
+      await tx
+        .update(candidates)
+        .set({ nodeId: null })
+        .where(eq(candidates.runId, run.id))
+      await tx
+        .update(generationRuns)
+        .set({ status: 'RUNNING', finishedAt: null })
+        .where(eq(generationRuns.id, run.id))
+    })
+    const baselineNodes = initial.nodes.map((node) => node.id).sort()
+    const baselineEdges = initial.edges.map((edge) => edge.id).sort()
+    const operation = {
+      op: 'ADD_IDEA' as const,
+      candidateId: selected.id,
+      parentNodeIds: [parent.id],
+      displayPosition: 1,
+    }
+    const patch = (
+      ops = [operation],
+      operator: 'GROUND' | 'LEAP' = 'GROUND',
+    ) => ({
+      projectId: created.projectId,
+      runId: run.id,
+      origin: 'OPERATOR_EXPANSION' as const,
+      operator,
+      ops,
+    })
+    const assertUnchanged = async () => {
+      const current = await caller.projects.get({ id: created.projectId })
+      expect(current.nodes.map((node) => node.id).sort()).toEqual(baselineNodes)
+      expect(current.edges.map((edge) => edge.id).sort()).toEqual(baselineEdges)
+    }
+    const invalidPatches = [
+      patch([operation], 'LEAP'),
+      patch([{ ...operation, candidateId: unselected.id }]),
+      patch([operation, { ...operation, displayPosition: 2 }]),
+      patch([{ ...operation, parentNodeIds: [otherParent.id] }]),
+      patch([{ ...operation, parentNodeIds: [parent.id, otherParent.id] }]),
+    ]
+    for (const invalid of invalidPatches) {
+      await expect(applyGraphPatch(db, invalid)).rejects.toBeInstanceOf(
+        GraphPatchError,
+      )
+      await assertUnchanged()
+    }
+    await db
+      .update(candidates)
+      .set({ operator: 'LEAP' })
+      .where(eq(candidates.id, selected.id))
+    await expect(applyGraphPatch(db, patch())).rejects.toBeInstanceOf(
+      GraphPatchError,
+    )
+    await db
+      .update(candidates)
+      .set({ operator: 'GROUND' })
+      .where(eq(candidates.id, selected.id))
+    await assertUnchanged()
+    await db
+      .update(nodes)
+      .set({ status: 'REJECTED' })
+      .where(eq(nodes.id, parent.id))
+    await expect(applyGraphPatch(db, patch())).rejects.toBeInstanceOf(
+      GraphPatchError,
+    )
+    await assertUnchanged()
+    await db
+      .update(nodes)
+      .set({ status: 'VISIBLE' })
+      .where(eq(nodes.id, parent.id))
+    await expect(
+      applyGraphPatch(db, patch(), { faultInjection: 'afterNodes' }),
+    ).rejects.toBeInstanceOf(GraphPatchError)
+    await assertUnchanged()
+  })
+
+  it('records a mismatched operator expansion as failed without graph changes', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    const beforeNodeCount = initial.nodes.length
+    const failed = await caller.projects.expand({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+      mockScenario: 'operator-mismatch',
+    })
+    expect(failed.status).toBe('FAILED')
+    const project = await caller.projects.get({ id: created.projectId })
+    expect(project.nodes).toHaveLength(beforeNodeCount)
+    expect(project.latestExpansionRun).toMatchObject({
+      status: 'FAILED',
+      errorCode: 'OPERATOR_MISMATCH',
+      operator: 'GROUND',
+      parentNodeId: parent.id,
+    })
+    const eventList = await caller.events.list({
+      projectId: created.projectId,
+    })
+    expect(eventList.at(-1)?.type).toBe('GENERATION_FAILED')
+  })
+
+  it.each(['malformed', 'provider-error', 'timeout'] as const)(
+    'leaves graph sets unchanged after %s expansion failure',
+    async (mockScenario) => {
+      const caller = appRouter.createCaller(createContext(databaseUrl))
+      const created = await caller.projects.create({
+        prompt: 'I want to test a neighborhood bakery.',
+      })
+      const initial = await caller.projects.get({ id: created.projectId })
+      const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+      const beforeNodes = initial.nodes.map((node) => node.id).sort()
+      const beforeEdges = initial.edges.map((edge) => edge.id).sort()
+      const failed = await caller.projects.expand({
+        projectId: created.projectId,
+        parentNodeId: parent.id,
+        operator: 'GROUND',
+        mockScenario,
+      })
+      expect(failed.status).toBe('FAILED')
+      const after = await caller.projects.get({ id: created.projectId })
+      expect(after.nodes.map((node) => node.id).sort()).toEqual(beforeNodes)
+      expect(after.edges.map((edge) => edge.id).sort()).toEqual(beforeEdges)
+      expect(after.latestExpansionRun?.status).toBe('FAILED')
+    },
+    45_000,
+  )
+
+  it('rejects preconditions before creating an expansion run', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const root = initial.nodes.find((node) => node.type === 'ROOT_PROMPT')!
+    const { db } = getDatabase(databaseUrl)
+    const before = await db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.projectId, created.projectId))
+    await expect(
+      caller.projects.expand({
+        projectId: created.projectId,
+        parentNodeId: root.id,
+        operator: 'GROUND',
+      }),
+    ).rejects.toThrow()
+    const after = await db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.projectId, created.projectId))
+    expect(after).toHaveLength(before.length)
   })
 
   it('stores long prompts in full while bounding the root summary', async () => {
