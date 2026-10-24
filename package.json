@@ -1,0 +1,33 @@
+{
+  "name": "unfold",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.8",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @unfold/server --filter @unfold/web dev",
+    "build": "pnpm --filter @unfold/server --filter @unfold/web build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "test": "pnpm -r --if-present test",
+    "test:integration": "pnpm --filter @unfold/server test:integration",
+    "test:e2e": "pnpm --filter @unfold/web test:e2e",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @unfold/server db:generate",
+    "db:migrate": "pnpm --filter @unfold/server db:migrate",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1"
+  }
+}
