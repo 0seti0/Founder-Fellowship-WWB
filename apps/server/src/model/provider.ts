@@ -122,7 +122,7 @@ class MockProvider implements ModelProvider {
     const facts: ExtractedFact[] = []
     const constraints: ExtractedConstraint[] = []
     const explicitMarker =
-      /\b(?:must(?:\s+not|n['’]t)?|need to|have to|cannot|can['’]t|do(?:\s+not|n['’]t)\s+want(?:\s+to)?|no more than|no|under|only|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?),?|within|without|never)\b/i
+      /\b(?:must(?:\s+not|n['’]t)?|need to|have to|cannot|can['’]t|do(?:\s+not|n['’]t)\s+want(?:\s+to)?|no more than|no(?![-‐])|under|only|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?),?|within|without|never)\b/i
     const softMarker = /\b(?:ideally|prefer|would like|i'd like|hopefully)\b/i
 
     for (const rawClause of prompt.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
@@ -341,7 +341,7 @@ function evaluateHardConstraint(
   constraint: ExtractedConstraint,
 ): 'violated' | 'unknown' {
   const negation = constraint.evidence.match(
-    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no|without|never)\b\s+(.+)/i,
+    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐])|without|never)\b\s+(.+)/i,
   )
   if (!negation?.[1]) return 'unknown'
 
@@ -712,7 +712,7 @@ function getSubject(prompt: string) {
     /^(?:an?\s+|the\s+)?(?:idea|concept|project|plan)\s+(?:of|for)\s+/i,
     '',
   )
-  const sentenceBoundary = phrase.search(/[.!?]/)
+  const sentenceBoundary = phrase.search(/[.!?](?=\s|$)/)
   if (sentenceBoundary >= 0) phrase = phrase.slice(0, sentenceBoundary)
   const clauseBoundary =
     /\b(?:for|who|that|which|so|because|whether|to|where|when|while|if|can|could|should|will|would|may|might|must|is|are|has|have|needs?|wants?)\b|[,;:]/i

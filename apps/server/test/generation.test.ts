@@ -172,6 +172,51 @@ describe('initial generation pipeline', () => {
     }
   })
 
+  it('does not treat the no-code modifier as a hard constraint', async () => {
+    const result = await generateForPrompt('I want to build a no-code app')
+    const selected = result.candidates.filter(
+      (candidate) => candidate.selectionState === 'SELECTED',
+    )
+
+    expect(selected.length).toBeGreaterThanOrEqual(2)
+    expect(
+      result.constraints.some(
+        ({ item }) =>
+          'strength' in item &&
+          item.strength === 'hard' &&
+          /no-code/i.test(item.evidence),
+      ),
+    ).toBe(false)
+  })
+
+  it('keeps Node.js in the generated subject', async () => {
+    const result = await generateForPrompt(
+      'I want to build a Node.js app. It must be done by Friday.',
+    )
+    const selectedTitles = result.candidates
+      .filter((candidate) => candidate.selectionState === 'SELECTED')
+      .map((candidate) => candidate.content.title)
+
+    expect(selectedTitles.length).toBeGreaterThan(0)
+    for (const title of selectedTitles) {
+      expect(title).toContain('Node.js app')
+    }
+  })
+
+  it('keeps .NET in the generated subject', async () => {
+    const result = await generateForPrompt(
+      'I want to build a .NET tool for my team.',
+    )
+    const selectedTitles = result.candidates
+      .filter((candidate) => candidate.selectionState === 'SELECTED')
+      .map((candidate) => candidate.content.title)
+
+    expect(selectedTitles.length).toBeGreaterThan(0)
+    for (const title of selectedTitles) {
+      expect(title).toContain('.NET tool')
+    }
+  })
+
   it('rejects low quality and generic first tests', async () => {
     const result = await generate('low-quality')
     expect(result.candidates[0]?.rejectionReasons).toContain(
