@@ -34,23 +34,23 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: source ~/.nvm/nvm.sh && pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - name: Create integration test database
-        run: source ~/.nvm/nvm.sh && mysql -h 127.0.0.1 -uroot -e "CREATE DATABASE IF NOT EXISTS unfold_test; GRANT ALL PRIVILEGES ON unfold_test.* TO 'unfold'@'%'; FLUSH PRIVILEGES"
+        run: mysql -h 127.0.0.1 -uroot -e "CREATE DATABASE IF NOT EXISTS unfold_test; GRANT ALL PRIVILEGES ON unfold_test.* TO 'unfold'@'%'; FLUSH PRIVILEGES"
         env:
           MYSQL_PWD: root
       - name: Allow trigger migrations with binary logging
-        run: source ~/.nvm/nvm.sh && mysql -h 127.0.0.1 -uroot -e 'SET GLOBAL log_bin_trust_function_creators = 1'
+        run: mysql -h 127.0.0.1 -uroot -e 'SET GLOBAL log_bin_trust_function_creators = 1'
         env:
           MYSQL_PWD: root
-      - run: source ~/.nvm/nvm.sh && pnpm db:migrate
-      - run: source ~/.nvm/nvm.sh && DATABASE_URL="$DATABASE_URL_TEST" pnpm db:migrate
-      - run: source ~/.nvm/nvm.sh && pnpm typecheck
-      - run: source ~/.nvm/nvm.sh && pnpm lint
-      - run: source ~/.nvm/nvm.sh && pnpm format:check
-      - run: source ~/.nvm/nvm.sh && pnpm test
-      - run: source ~/.nvm/nvm.sh && pnpm test:integration
-      - run: source ~/.nvm/nvm.sh && pnpm build
+      - run: pnpm db:migrate
+      - run: DATABASE_URL="$DATABASE_URL_TEST" pnpm db:migrate
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm test
+      - run: pnpm test:integration
+      - run: pnpm build
       - name: Install Playwright Chromium
-        run: source ~/.nvm/nvm.sh && pnpm --filter @unfold/web exec playwright install --with-deps chromium
-      - run: source ~/.nvm/nvm.sh && pnpm test:e2e
+        run: pnpm --filter @unfold/web exec playwright install --with-deps chromium
+      - run: pnpm test:e2e

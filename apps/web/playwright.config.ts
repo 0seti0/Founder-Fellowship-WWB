@@ -24,8 +24,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command:
-        "bash -c 'source ~/.nvm/nvm.sh && pnpm --filter @unfold/server dev'",
+      command: 'pnpm --filter @unfold/server dev',
       url: 'http://127.0.0.1:3001/health',
       reuseExistingServer: false,
       timeout: 120_000,
@@ -39,7 +38,7 @@ export default defineConfig({
       },
     },
     {
-      command: "bash -c 'source ~/.nvm/nvm.sh && pnpm dev'",
+      command: 'pnpm dev',
       url: 'http://127.0.0.1:5173',
       reuseExistingServer: false,
       timeout: 120_000,
