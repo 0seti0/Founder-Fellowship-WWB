@@ -22,6 +22,7 @@ const EnvironmentSchema = z
       )
       .default('mysql://unfold:unfold@localhost:3306/unfold'),
     MODEL_MODE: z.enum(['mock', 'live']).default('mock'),
+    MODEL_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
     MODEL_API_KEY: z
       .string()
       .optional()

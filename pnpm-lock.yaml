@@ -95,6 +95,9 @@ importers:
       '@unfold/server':
         specifier: workspace:*
         version: link:../server
+      '@unfold/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@xyflow/react':
         specifier: ^12.10.0
         version: 12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
