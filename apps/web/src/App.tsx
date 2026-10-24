@@ -57,6 +57,8 @@ export function App() {
     () => window.matchMedia('(max-width: 640px)').matches,
   )
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const graphContainerRef = useRef<HTMLDivElement>(null)
+  const [graphContainerSize, setGraphContainerSize] = useState('')
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const reportedSlateRuns = useRef(new Set<string>())
 
@@ -127,6 +129,39 @@ export function App() {
       })),
     [projectData],
   )
+
+  const graphFitKey = useMemo(
+    () =>
+      JSON.stringify({
+        size: graphContainerSize,
+        nodes: graphNodes.map(
+          ({ id, position, width, height, selected, data }) => ({
+            id,
+            position,
+            width,
+            height,
+            selected,
+            title: data.title,
+            subtitle: data.subtitle,
+          }),
+        ),
+      }),
+    [graphContainerSize, graphNodes],
+  )
+
+  useEffect(() => {
+    const graphContainer = graphContainerRef.current
+    if (!graphContainer || typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return
+      const { width, height } = entry.contentRect
+      const size = `${Math.round(width)}x${Math.round(height)}`
+      setGraphContainerSize((current) => (current === size ? current : size))
+    })
+    observer.observe(graphContainer)
+    return () => observer.disconnect()
+  }, [projectData])
 
   const closeInspector = useCallback(() => {
     if (projectData) updateUrl(projectData.project.id, null)
@@ -347,6 +382,7 @@ export function App() {
                           ? 'project-link active'
                           : 'project-link'
                       }
+                      title={project.title}
                       onClick={() => openProject(project.id)}
                     >
                       {project.title}
@@ -393,7 +429,9 @@ export function App() {
               <div className="workspace-heading">
                 <div>
                   <p className="eyebrow">Exploration</p>
-                  <h2>{projectData.project.title}</h2>
+                  <h2 title={projectData.project.title}>
+                    {projectData.project.title}
+                  </h2>
                 </div>
                 {run?.status === 'SUCCEEDED' && (
                   <p className="direction-count">
@@ -430,11 +468,13 @@ export function App() {
                 </div>
               )}
               <div
+                ref={graphContainerRef}
                 className={`workspace-graph ${selectedNode ? 'with-inspector' : ''}`}
                 data-testid="graph-canvas"
                 aria-label="Idea graph"
               >
                 <ReactFlow
+                  key={graphFitKey}
                   nodes={graphNodes}
                   edges={graphEdges}
                   nodeTypes={nodeTypes}
@@ -444,6 +484,7 @@ export function App() {
                   onNodeClick={(_, node) => openNode(node.id)}
                   fitView
                   fitViewOptions={{ padding: 0.2 }}
+                  minZoom={0.2}
                   proOptions={{ hideAttribution: true }}
                 >
                   <Background color="#e5e1d7" gap={24} size={1} />

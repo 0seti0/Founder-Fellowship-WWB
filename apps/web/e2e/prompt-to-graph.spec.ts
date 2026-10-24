@@ -26,9 +26,8 @@ test('creates, inspects, and restores a prompt graph', async ({
     )
   await page.getByRole('button', { name: 'Unfold', exact: true }).click()
 
-  const graphNodes = page.locator(
-    '[data-testid="graph-canvas"] .react-flow__node',
-  )
+  const graphCanvas = page.getByTestId('graph-canvas')
+  const graphNodes = graphCanvas.locator('.react-flow__node')
   await expect(graphNodes).toHaveCount(5, { timeout: 30_000 })
   await expect(page.getByTestId('graph-node-root')).toContainText('Your prompt')
   await page.screenshot({
@@ -59,6 +58,9 @@ test('creates, inspects, and restores a prompt graph', async ({
     const inspector = page.getByTestId('inspector-panel')
     await expect(inspector).toBeVisible()
     await expectInspectorSections(inspector)
+    await expect
+      .poll(() => graphNodesOutsideCanvas(graphCanvas, graphNodes))
+      .toEqual([])
     await page.screenshot({
       path: resolve(evidenceDirectory, 'desktop-inspector.png'),
       fullPage: true,
@@ -78,11 +80,11 @@ test('creates, inspects, and restores a prompt graph', async ({
 test('keeps the root prompt visible when generation fails', async ({
   page,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name === 'mobile',
-    'Failure screenshot is desktop evidence',
+  await page.setViewportSize(
+    testInfo.project.name === 'mobile'
+      ? { width: 375, height: 812 }
+      : { width: 1280, height: 800 },
   )
-  await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/')
   await page.getByLabel('Mock scenario').selectOption('provider-error')
   await page
@@ -102,10 +104,41 @@ test('keeps the root prompt visible when generation fails', async ({
   await expect(page.getByTestId('graph-node-root')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
   await page.screenshot({
-    path: resolve(evidenceDirectory, 'failure-state.png'),
+    path: resolve(
+      evidenceDirectory,
+      testInfo.project.name === 'mobile'
+        ? 'failure-state-mobile.png'
+        : 'failure-state.png',
+    ),
     fullPage: true,
   })
 })
+
+async function graphNodesOutsideCanvas(canvas: Locator, nodes: Locator) {
+  const canvasBounds = await canvas.boundingBox()
+  if (!canvasBounds) return ['Canvas has no bounding box']
+
+  const nodeCount = await nodes.count()
+  const nodeBounds = await Promise.all(
+    Array.from({ length: nodeCount }, (_, index) =>
+      nodes.nth(index).boundingBox(),
+    ),
+  )
+  return nodeBounds.flatMap((bounds, index) => {
+    if (!bounds) return [`Node ${index} has no bounding box`]
+    if (
+      bounds.x < canvasBounds.x ||
+      bounds.y < canvasBounds.y ||
+      bounds.x + bounds.width > canvasBounds.x + canvasBounds.width ||
+      bounds.y + bounds.height > canvasBounds.y + canvasBounds.height
+    ) {
+      return [
+        `Node ${index} ${JSON.stringify(bounds)} exceeds canvas ${JSON.stringify(canvasBounds)}`,
+      ]
+    }
+    return []
+  })
+}
 
 async function expectInspectorSections(inspector: Locator) {
   for (const name of [
