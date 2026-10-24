@@ -13,7 +13,7 @@ const { chromium, expect } = require('@playwright/test')
 
 const PROMPT = 'I want to start a neighborhood bakery for busy families.'
 const DEMO_DB = 'unfold_demo'
-const DATABASE_URL = `mysql://unfold:unfold@localhost:3306/${DEMO_DB}`
+const DATABASE_URL = `mysql://unfold:unfold@localhost:${process.env.MYSQL_PORT ?? '3306'}/${DEMO_DB}`
 const SERVER_URL = 'http://127.0.0.1:3001'
 const WEB_URL = 'http://127.0.0.1:5173'
 const VIEWPORT = { width: 1440, height: 750 }
@@ -137,6 +137,14 @@ function caption(text) {
 
 async function record() {
   const browser = await chromium.launch()
+  try {
+    return await recordWith(browser)
+  } finally {
+    await browser.close()
+  }
+}
+
+async function recordWith(browser) {
   const page = await browser.newPage({
     viewport: VIEWPORT,
     deviceScaleFactor: SCALE,
@@ -322,7 +330,6 @@ async function record() {
   await cdp.send('Page.stopScreencast')
   await Promise.all(pendingWrites)
   captions.at(-1).end = Date.now() / 1000
-  await browser.close()
 
   const summary = { ideaCount, pinned, groundCount, leapCount, mockBadge }
   console.log('Persisted graph after reload:', JSON.stringify(summary))
