@@ -409,6 +409,44 @@ describe('operator expansion pipeline', () => {
       selectionMetadata: { duplicateOfNodeId: 'existing-child' },
     })
   })
+
+  it('bounds mock child titles across successive operator generations', async () => {
+    const { parent: initialParent, facts } = await expansionContext()
+    let parent: IdeaContent = {
+      ...initialParent,
+      title: 'Neighborhood bakery for nearby busy families '
+        .repeat(4)
+        .slice(0, 120),
+    }
+    expect(parent.title).toHaveLength(120)
+
+    for (const operator of [
+      'GROUND',
+      'REFRAME',
+      'LEAP',
+      'TRANSPLANT',
+    ] as const) {
+      const result = await expandPipeline({
+        operator,
+        parent,
+        rootPrompt: prompt,
+        facts,
+        constraints: [],
+        assumption: parent.changedAssumptions[0],
+        mechanism: parent.mechanism,
+        provider: createModelProvider({ MODEL_MODE: 'mock' }),
+        timeoutMs,
+      })
+      expect(result.candidates).toHaveLength(6)
+      for (const candidate of result.candidates) {
+        const content = IdeaContentSchema.parse(candidate.content)
+        expect(content.title.length).toBeLessThanOrEqual(120)
+        expect(content.title.match(/: /g)).toHaveLength(1)
+        expect(content.summary.length).toBeLessThanOrEqual(600)
+      }
+      parent = result.candidates[0]!.content
+    }
+  })
 })
 
 function cosine(left: number[], right: number[]) {

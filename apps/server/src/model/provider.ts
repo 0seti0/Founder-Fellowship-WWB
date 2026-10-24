@@ -354,6 +354,19 @@ function fixtureSummary(
   return `Adapt ${values.sourceMechanism} into ${fixture.method} in ${values.context} to ${fixture.goal} for ${values.beneficiary}.`
 }
 
+function expansionTitle(subject: string, suffix: string) {
+  const fullSuffix = `: ${suffix}`
+  const subjectLimit = 120 - fullSuffix.length
+  if (subject.length <= subjectLimit) return `${subject}${fullSuffix}`
+
+  const truncated = subject.slice(0, subjectLimit - 1)
+  const wordBoundary = truncated.lastIndexOf(' ')
+  const prefix = (
+    wordBoundary > 0 ? truncated.slice(0, wordBoundary) : truncated
+  ).trimEnd()
+  return `${prefix}…${fullSuffix}`
+}
+
 const hyphenatedNoModifiers = new Set([
   'code',
   'brainer',
@@ -579,7 +592,8 @@ class MockProvider implements ModelProvider {
       assumption?: string
       mechanism?: string
     }
-    const subject = parent.title.trim() || 'this direction'
+    const subject =
+      parent.title.trim().split(': ', 1)[0]?.trim() || 'this direction'
     const sourceMechanism = (mechanism || parent.mechanism).trim()
     const beneficiary = parent.hypothesis.axes.beneficiary
     const preservedIntent = parent.preservedIntent
@@ -601,11 +615,11 @@ class MockProvider implements ModelProvider {
         sourceMechanism,
         assumption: trustedAssumption,
         context,
-      })
+      }).slice(0, 600)
       const next: IdeaContent = {
         ...parent,
         key: `expand-${operator.toLowerCase()}-${index + 1}`,
-        title: `${subject}: ${template.title}`,
+        title: expansionTitle(subject, template.title),
         summary,
         hypothesis: {
           ...parent.hypothesis,
