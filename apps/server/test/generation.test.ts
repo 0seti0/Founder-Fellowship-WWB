@@ -422,6 +422,67 @@ describe('initial generation pipeline', () => {
     ).toBe('unknown')
   })
 
+  it('keeps coordinated actions inside an ordinary negation scope', () => {
+    const constraint = makeHardConstraint('I must not buy or sell')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('splits coordinated actions at a new ordinary negation', () => {
+    const constraint = makeHardConstraint(
+      'I must not buy and must not contact customers',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Interview five neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('ends an ordinary negation scope at but', () => {
+    const constraint = makeHardConstraint(
+      'I must not spend money but can borrow equipment',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate("Borrow a friend's oven for a trial bake."),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
   it('ignores negated mentions of a hyphenated ban in candidate text', async () => {
     const constraint = makeHardConstraint(
       'I want a no-commitment neighborhood bakery trial',

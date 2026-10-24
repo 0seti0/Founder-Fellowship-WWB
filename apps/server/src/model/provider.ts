@@ -309,6 +309,7 @@ class MockProvider implements ModelProvider {
 const constraintStopWords = new Set([
   'a',
   'an',
+  'and',
   'anybody',
   'anyone',
   'anything',
@@ -316,6 +317,7 @@ const constraintStopWords = new Set([
   'as',
   'at',
   'be',
+  'but',
   'by',
   'for',
   'from',
@@ -324,6 +326,7 @@ const constraintStopWords = new Set([
   'it',
   'me',
   'my',
+  'nor',
   'of',
   'on',
   'or',
@@ -366,8 +369,11 @@ export function evaluateHardConstraint(
   constraint: ExtractedConstraint,
 ): 'violated' | 'unknown' {
   const terms = new Set(findHyphenatedBans(constraint.evidence))
-  const ordinaryNegation =
-    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐‑])|without|never)\b\s+(.+?)(?=\s+(?:and|or|but)\b|[,;]|$)/gi
+  const ordinaryNegationMarker = String.raw`(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐‑])|without|never)`
+  const ordinaryNegation = new RegExp(
+    String.raw`\b${ordinaryNegationMarker}\b\s+(.+?)(?=;|$|\s+but\b|,?\s+(?:and|or)\s+(?=\b${ordinaryNegationMarker}\b|\bno[-‐‑]\p{L}))`,
+    'giu',
+  )
 
   for (const match of constraint.evidence.matchAll(ordinaryNegation)) {
     const capture = match[1]!
@@ -380,7 +386,7 @@ export function evaluateHardConstraint(
       .filter(
         (word) => !constraintStopWords.has(word) && !hyphenatedWords.has(word),
       )
-      .slice(0, 3)
+      .slice(0, 4)
     for (const term of ordinaryTerms) terms.add(term)
   }
 
