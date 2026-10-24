@@ -540,6 +540,18 @@ select:focus-visible {
   background: #f1e7e3;
 }
 
+.graph-hidden-placeholder {
+  display: grid;
+  min-height: 46px;
+  place-items: center;
+  border: 1px dashed #aaa49a;
+  border-radius: 10px;
+  background: #f0eee9;
+  color: #716d65;
+  font-size: 11px;
+  padding: 8px 12px;
+}
+
 .graph-card.status-rejected .graph-card-title,
 .graph-card.status-rejected .graph-card-subtitle {
   opacity: 0.68;

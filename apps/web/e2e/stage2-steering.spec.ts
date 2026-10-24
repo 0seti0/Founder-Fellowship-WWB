@@ -42,6 +42,12 @@ for (const width of [1280, 1440]) {
             ),
           ),
         ).toBeGreaterThan(0)
+        await expect
+          .poll(() => page.getByTestId('graph-node-idea').count())
+          .toBeGreaterThan(nodesBefore)
+        await expect
+          .poll(() => page.locator('.react-flow__edge').count())
+          .toBeGreaterThan(edgesBefore)
         const nodesAfter = await page.getByTestId('graph-node-idea').count()
         const edgesAfter = await page.locator('.react-flow__edge').count()
         const nodeDelta = nodesAfter - nodesBefore
@@ -200,6 +206,70 @@ for (const width of [1280, 1440]) {
       await page.locator('.operator-options').scrollIntoViewIfNeeded()
       await capture('operator-none-pass-empty-state')
 
+      const parentIdeaCount = await page.getByTestId('graph-node-idea').count()
+      const parentEdgeCount = await page.locator('.react-flow__edge').count()
+      await page.getByRole('button', { name: 'Reject', exact: true }).click()
+      const hiddenPlaceholder = page.getByTestId('graph-node-hidden')
+      await expect(hiddenPlaceholder).toBeVisible()
+      await expect(hiddenPlaceholder).toHaveAttribute(
+        'aria-label',
+        'Hidden direction · rejected',
+      )
+      await expect(page.getByTestId('inspector-panel')).toHaveCount(0)
+      await expect(page.getByTestId('graph-node-idea')).toHaveCount(
+        parentIdeaCount - 1,
+      )
+      await expect(page.locator('.direction-count')).toHaveText(
+        `${parentIdeaCount - 1} directions`,
+      )
+      await expect(page.locator('.react-flow__edge')).toHaveCount(
+        parentEdgeCount,
+      )
+      await hiddenPlaceholder.scrollIntoViewIfNeeded()
+      await capture('hidden-parent-placeholder')
+      await page
+        .getByRole('button', { name: 'Reveal rejected and archived' })
+        .click()
+      await expect(page.getByTestId('graph-node-hidden')).toHaveCount(0)
+      await expect(page.locator('.graph-card.status-rejected')).toBeVisible()
+      const revealedParent = page.locator('.graph-card.status-rejected')
+      await expect(
+        revealedParent.getByText('Rejected', { exact: true }),
+      ).toBeVisible()
+      expect(
+        await revealedParent.evaluate(
+          (element) => getComputedStyle(element).borderStyle,
+        ),
+      ).toBe('dashed')
+      expect(
+        Number(
+          await revealedParent
+            .locator('.graph-card-title')
+            .evaluate((element) => getComputedStyle(element).opacity),
+        ),
+      ).toBeLessThan(1)
+      await expect(page.getByTestId('graph-node-idea')).toHaveCount(
+        parentIdeaCount,
+      )
+      await revealedParent.scrollIntoViewIfNeeded()
+      await capture('hidden-parent-revealed')
+      await page
+        .getByRole('button', { name: 'Hide rejected and archived' })
+        .click()
+      await expect(page.getByTestId('graph-node-hidden')).toBeVisible()
+      const hiddenIdeaCount = parentIdeaCount - 1
+      const hiddenEdgeCount = await page.locator('.react-flow__edge').count()
+      await page.reload()
+      await expect(page.getByTestId('graph-node-hidden')).toBeVisible()
+      await expect(page.getByTestId('graph-node-idea')).toHaveCount(
+        hiddenIdeaCount,
+      )
+      await expect(page.locator('.react-flow__edge')).toHaveCount(
+        hiddenEdgeCount,
+      )
+      await page.getByTestId('graph-node-hidden').scrollIntoViewIfNeeded()
+      await capture('hidden-parent-placeholder-reload')
+
       await page
         .getByRole('textbox', { name: 'Your prompt' })
         .fill('I want to test a neighborhood bakery with a new model.')
@@ -232,43 +302,18 @@ for (const width of [1280, 1440]) {
       await page.locator('.operator-options').scrollIntoViewIfNeeded()
       await capture('operator-gaps-disabled-reasons')
 
-      const rejectedCard = page.getByTestId('graph-node-idea').first()
-      const visibleCountBeforeReject = await page
-        .getByTestId('graph-node-idea')
-        .count()
-      await rejectedCard.click()
-      await page.getByRole('button', { name: 'Reject', exact: true }).click()
-      await expect(page.getByTestId('graph-node-idea')).toHaveCount(
-        visibleCountBeforeReject - 1,
+      const changedAssumptionsField = page.getByRole('textbox', {
+        name: 'Changed assumptions',
+        exact: true,
+      })
+      await expect(changedAssumptionsField).toBeVisible()
+      await changedAssumptionsField.fill(
+        'Nearby parents will preorder breakfast boxes weekly',
       )
-      await capture('rejected-hidden')
-      await page
-        .getByRole('button', { name: 'Reveal rejected and archived' })
-        .click()
-      const revealedRejected = page.locator('.graph-card.status-rejected')
-      await expect(revealedRejected).toBeVisible()
-      await expect(
-        revealedRejected.getByText('Rejected', { exact: true }),
-      ).toBeVisible()
-      expect(
-        await revealedRejected
-          .getByText('Rejected', { exact: true })
-          .evaluate((element) => getComputedStyle(element).opacity),
-      ).toBe('1')
-      await revealedRejected.scrollIntoViewIfNeeded()
-      expect(
-        await revealedRejected.evaluate(
-          (element) => getComputedStyle(element).borderStyle,
-        ),
-      ).toBe('dashed')
-      expect(
-        Number(
-          await revealedRejected
-            .locator('.graph-card-title')
-            .evaluate((element) => getComputedStyle(element).opacity),
-        ),
-      ).toBeLessThan(1)
-      await capture('rejected-revealed')
+      await page.getByRole('button', { name: 'Save edits' }).click()
+      await expect(page.getByRole('button', { name: /^Invert/i })).toBeEnabled()
+      await page.locator('.operator-options').scrollIntoViewIfNeeded()
+      await capture('operator-gaps-invert-enabled')
 
       const editCard = page.getByTestId('graph-node-idea').nth(1)
       await editCard.click()

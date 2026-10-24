@@ -28,6 +28,7 @@ import {
 } from 'react'
 import '@xyflow/react/dist/style.css'
 import { layoutWithPreservedPositions } from './lib/layout'
+import { buildRenderedGraph } from './lib/renderedGraph'
 import { trpcClient } from './lib/trpc'
 import { Stage2Controls } from './components/Stage2Controls'
 
@@ -40,6 +41,7 @@ type GraphNodeData = {
   active: boolean
   edited: boolean
   operator: string | null
+  placeholderLabel?: string
 }
 
 const nodeTypes = { graphCard: GraphCard }
@@ -98,9 +100,22 @@ export function App() {
     retry: false,
   })
   const projectData = projectQuery.data
-  const selectedNode = projectData?.nodes.find(
-    (node) => node.id === selectedNodeId,
+  const renderedGraph = useMemo(
+    () =>
+      buildRenderedGraph(
+        projectData?.nodes ?? [],
+        projectData?.edges ?? [],
+        revealArchived,
+      ),
+    [projectData, revealArchived],
   )
+  const selectedRenderedNode = renderedGraph.nodes.find(
+    (item) => item.node.id === selectedNodeId,
+  )
+  const selectedNode =
+    selectedRenderedNode && !selectedRenderedNode.placeholder
+      ? projectData?.nodes.find((node) => node.id === selectedNodeId)
+      : undefined
   const selectedCandidate = selectedNode?.candidateId
     ? (projectData?.candidates.find(
         (candidate) => candidate.id === selectedNode.candidateId,
@@ -116,48 +131,66 @@ export function App() {
       }
     }
     const positions = positionCacheRef.current.positions
-    const visible = projectData.nodes.filter(
-      (node) =>
-        revealArchived ||
-        (node.status !== 'REJECTED' && node.status !== 'ARCHIVED'),
+    const visible = renderedGraph.nodes.map(({ node }) => node)
+    const graphEdges: Edge[] = renderedGraph.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.parentId,
+      target: edge.childId,
+    }))
+    const rawNodes: Node<GraphNodeData>[] = renderedGraph.nodes.map(
+      ({ node, placeholder }) => {
+        if (placeholder) {
+          const state = node.status === 'REJECTED' ? 'rejected' : 'archived'
+          const label = `Hidden direction · ${state}`
+          return {
+            id: node.id,
+            type: 'graphCard',
+            data: {
+              title: label,
+              subtitle: '',
+              root: false,
+              testId: 'graph-node-hidden',
+              status: node.status,
+              active: false,
+              edited: false,
+              operator: null,
+              placeholderLabel: label,
+            },
+            position: positions.get(node.id) ?? { x: 0, y: 0 },
+            width: 190,
+            height: 48,
+            selected: false,
+            selectable: false,
+            draggable: false,
+          }
+        }
+        const candidate = node.candidateId
+          ? projectData.candidates.find((item) => item.id === node.candidateId)
+          : undefined
+        const idea = IdeaContentSchema.safeParse(node.content)
+        return {
+          id: node.id,
+          type: 'graphCard',
+          data: {
+            title: node.type === 'ROOT_PROMPT' ? 'Your prompt' : node.title,
+            subtitle:
+              node.type === 'ROOT_PROMPT'
+                ? node.summary
+                : `${node.operator ?? 'Direction'} · ${idea.success ? idea.data.distance : (candidate?.content.distance ?? 'near')}`,
+            root: node.type === 'ROOT_PROMPT',
+            testId: `graph-node-${node.type === 'ROOT_PROMPT' ? 'root' : 'idea'}`,
+            status: node.status,
+            active: projectData.project.activeNodeId === node.id,
+            edited: node.userEdited,
+            operator: node.operator,
+          },
+          position: positions.get(node.id) ?? { x: 0, y: 0 },
+          width: 252,
+          height: node.type === 'ROOT_PROMPT' ? 124 : 112,
+          selected: node.id === selectedNodeId,
+        }
+      },
     )
-    const visibleIds = new Set(visible.map((node) => node.id))
-    const graphEdges: Edge[] = projectData.edges
-      .filter(
-        (edge) => visibleIds.has(edge.parentId) && visibleIds.has(edge.childId),
-      )
-      .map((edge) => ({
-        id: edge.id,
-        source: edge.parentId,
-        target: edge.childId,
-      }))
-    const rawNodes: Node<GraphNodeData>[] = visible.map((node) => {
-      const candidate = node.candidateId
-        ? projectData.candidates.find((item) => item.id === node.candidateId)
-        : undefined
-      const idea = IdeaContentSchema.safeParse(node.content)
-      return {
-        id: node.id,
-        type: 'graphCard',
-        data: {
-          title: node.type === 'ROOT_PROMPT' ? 'Your prompt' : node.title,
-          subtitle:
-            node.type === 'ROOT_PROMPT'
-              ? node.summary
-              : `${node.operator ?? 'Direction'} · ${idea.success ? idea.data.distance : (candidate?.content.distance ?? 'near')}`,
-          root: node.type === 'ROOT_PROMPT',
-          testId: `graph-node-${node.type === 'ROOT_PROMPT' ? 'root' : 'idea'}`,
-          status: node.status,
-          active: projectData.project.activeNodeId === node.id,
-          edited: node.userEdited,
-          operator: node.operator,
-        },
-        position: positions.get(node.id) ?? { x: 0, y: 0 },
-        width: 252,
-        height: node.type === 'ROOT_PROMPT' ? 124 : 112,
-        selected: node.id === selectedNodeId,
-      }
-    })
     const byId = new Map(visible.map((node) => [node.id, node]))
     const visibleOrder = new Map(visible.map((node, index) => [node.id, index]))
     const layout = layoutWithPreservedPositions(
@@ -176,20 +209,15 @@ export function App() {
     )
     layout.forEach((node) => positions.set(node.id, node.position))
     return layout
-  }, [projectData, revealArchived, selectedNodeId])
+  }, [projectData, renderedGraph, selectedNodeId])
 
   const graphEdges = useMemo<Edge[]>(() => {
-    const visibleIds = new Set(graphNodes.map((node) => node.id))
-    return (projectData?.edges ?? [])
-      .filter(
-        (edge) => visibleIds.has(edge.parentId) && visibleIds.has(edge.childId),
-      )
-      .map((edge) => ({
-        id: edge.id,
-        source: edge.parentId,
-        target: edge.childId,
-      }))
-  }, [graphNodes, projectData])
+    return renderedGraph.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.parentId,
+      target: edge.childId,
+    }))
+  }, [renderedGraph])
 
   useEffect(() => {
     const graphContainer = graphContainerRef.current
@@ -323,6 +351,10 @@ export function App() {
 
   function openNode(nodeId: string) {
     if (!projectData) return
+    if (
+      renderedGraph.nodes.find((item) => item.node.id === nodeId)?.placeholder
+    )
+      return
     const node = projectData.nodes.find((item) => item.id === nodeId)
     if (!node) return
     previousFocusRef.current =
@@ -512,8 +544,10 @@ export function App() {
                 {run?.status === 'SUCCEEDED' && (
                   <p className="direction-count">
                     {
-                      projectData.nodes.filter((node) => node.type === 'IDEA')
-                        .length
+                      renderedGraph.nodes.filter(
+                        ({ node, placeholder }) =>
+                          node.type === 'IDEA' && !placeholder,
+                      ).length
                     }{' '}
                     directions
                   </p>
@@ -611,6 +645,22 @@ export function App() {
 }
 
 function GraphCard({ data }: NodeProps<Node<GraphNodeData>>) {
+  if (data.placeholderLabel)
+    return (
+      <div
+        className="graph-hidden-placeholder"
+        data-testid={data.testId}
+        aria-label={data.placeholderLabel}
+      >
+        <Handle type="target" position={Position.Top} isConnectable={false} />
+        {data.placeholderLabel}
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          isConnectable={false}
+        />
+      </div>
+    )
   return (
     <div
       className={`graph-card status-${data.status.toLowerCase()} ${data.active ? 'is-active' : ''} ${data.edited ? 'is-edited' : ''}`}
