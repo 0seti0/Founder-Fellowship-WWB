@@ -6,12 +6,19 @@ import { generatePipeline, PipelineError } from '../src/generation/pipeline'
 const prompt = 'I want to open a bakery for neighbors.'
 const timeoutMs = 100
 
-async function generate(mockScenario?: MockScenario) {
+async function generateForPrompt(
+  generationPrompt: string,
+  mockScenario?: MockScenario,
+) {
   return generatePipeline({
-    prompt,
+    prompt: generationPrompt,
     provider: createModelProvider({ MODEL_MODE: 'mock' }, { mockScenario }),
     timeoutMs,
   })
+}
+
+async function generate(mockScenario?: MockScenario) {
+  return generateForPrompt(prompt, mockScenario)
 }
 
 describe('initial generation pipeline', () => {
@@ -23,6 +30,52 @@ describe('initial generation pipeline', () => {
       expect(prompt.slice(span.start, span.end)).toBe(span.item.evidence)
     }
     expect(result.candidates).toHaveLength(6)
+  })
+
+  it('uses clean noun-phrase subjects and distinct candidate prose', async () => {
+    const prompts = [
+      {
+        prompt:
+          'I want to explore a neighborhood bakery idea for people who need a welcoming place to meet.',
+        subject: 'a neighborhood bakery',
+      },
+      {
+        prompt:
+          "I'd like to start a community garden that gives neighbors space to grow fresh food.",
+        subject: 'a community garden',
+      },
+      {
+        prompt: 'How can I test whether my neighborhood can support a bakery?',
+        subject: 'my neighborhood',
+      },
+    ]
+
+    for (const { prompt: testPrompt, subject } of prompts) {
+      const result = await generateForPrompt(testPrompt)
+      expect(result.candidates).toHaveLength(6)
+
+      const titles = result.candidates.map(
+        (candidate) => candidate.content.title,
+      )
+      for (const title of titles) {
+        expect(title).toContain(subject)
+        expect(title).not.toMatch(/\b(\w+)\s+\1\b/i)
+        expect(title).not.toMatch(/\bfor (?:explore|test|I)\b/i)
+      }
+
+      for (const field of [
+        'summary',
+        'mechanism',
+        'strongestObjection',
+        'firstTest',
+      ] as const) {
+        expect(
+          new Set(
+            result.candidates.map((candidate) => candidate.content[field]),
+          ).size,
+        ).toBe(6)
+      }
+    }
   })
 
   it('retries extraction once after malformed output or invalid evidence', async () => {
