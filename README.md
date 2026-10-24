@@ -41,6 +41,23 @@ Candidate deduplication uses embedding cosine similarity at `≥ 0.92`. If embed
 pipeline falls back to normalized token-set Jaccard similarity at `≥ 0.8`; this is recorded as
 `TEXT_FALLBACK`, marks the run degraded, and logs the fallback reason.
 
+## Steering and operator expansion
+
+Select an idea direction to inspect its persisted content and steer the graph. Visible directions
+can be pinned, edited, rejected, archived, or made active. Rejected and archived nodes are hidden
+by default; use **Reveal rejected and archived** to show them. The graph records operator ancestry
+and keeps existing node positions when new children are added.
+
+An eligible idea can be expanded with one of five unary operators: **GROUND**, **REFRAME**,
+**LEAP**, **INVERT**, or **TRANSPLANT**. Operator availability and disabled reasons come from the
+server's persisted-graph planner. Expansion requests six mock candidates, validates operator
+effects and constraints, then displays up to three candidates that pass the quality floor. An
+expansion may succeed with no added directions when none meet that floor.
+
+Mock scenarios `operator-mismatch` and `operator-gaps` exercise operator validation and incomplete
+initial candidate content. Mock-only scenarios are not accepted when the server is configured for
+live mode. The COMBINE operator and profile/artifact workflows are not part of this stage.
+
 ## Commands
 
 | Command                                | Purpose                                 |
