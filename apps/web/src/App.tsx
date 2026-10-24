@@ -8,8 +8,10 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import {
+  IdeaContentSchema,
   MockScenarioSchema,
   type CandidateDto,
   type GraphNodeDto,
@@ -27,12 +29,17 @@ import {
 import '@xyflow/react/dist/style.css'
 import { layoutWithDagre } from './lib/layout'
 import { trpcClient } from './lib/trpc'
+import { Stage2Controls } from './components/Stage2Controls'
 
 type GraphNodeData = {
   title: string
   subtitle: string
   root: boolean
   testId: string
+  status: string
+  active: boolean
+  edited: boolean
+  operator: string | null
 }
 
 const nodeTypes = { graphCard: GraphCard }
@@ -58,7 +65,19 @@ export function App() {
   )
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const graphContainerRef = useRef<HTMLDivElement>(null)
-  const [graphContainerSize, setGraphContainerSize] = useState('')
+  const graphInstanceRef = useRef<ReactFlowInstance<
+    Node<GraphNodeData>,
+    Edge
+  > | null>(null)
+  const graphFittedProjectRef = useRef<string | null>(null)
+  const graphSizeRef = useRef<string | null>(null)
+  const positionCacheRef = useRef<{
+    projectId: string | null
+    positions: Map<string, { x: number; y: number }>
+  }>({ projectId: null, positions: new Map() })
+  const [revealArchived, setRevealArchived] = useState(
+    () => new URLSearchParams(window.location.search).get('reveal') === '1',
+  )
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const reportedSlateRuns = useRef(new Set<string>())
 
@@ -90,10 +109,33 @@ export function App() {
 
   const graphNodes = useMemo(() => {
     if (!projectData) return []
-    const rawNodes: Node<GraphNodeData>[] = projectData.nodes.map((node) => {
+    if (positionCacheRef.current.projectId !== projectData.project.id) {
+      positionCacheRef.current = {
+        projectId: projectData.project.id,
+        positions: new Map(),
+      }
+    }
+    const positions = positionCacheRef.current.positions
+    const visible = projectData.nodes.filter(
+      (node) =>
+        revealArchived ||
+        (node.status !== 'REJECTED' && node.status !== 'ARCHIVED'),
+    )
+    const visibleIds = new Set(visible.map((node) => node.id))
+    const graphEdges: Edge[] = projectData.edges
+      .filter(
+        (edge) => visibleIds.has(edge.parentId) && visibleIds.has(edge.childId),
+      )
+      .map((edge) => ({
+        id: edge.id,
+        source: edge.parentId,
+        target: edge.childId,
+      }))
+    const rawNodes: Node<GraphNodeData>[] = visible.map((node) => {
       const candidate = node.candidateId
         ? projectData.candidates.find((item) => item.id === node.candidateId)
         : undefined
+      const idea = IdeaContentSchema.safeParse(node.content)
       return {
         id: node.id,
         type: 'graphCard',
@@ -102,72 +144,105 @@ export function App() {
           subtitle:
             node.type === 'ROOT_PROMPT'
               ? node.summary
-              : `Direction · ${candidate?.content.distance ?? 'near'}`,
+              : `${node.operator ?? 'Direction'} · ${idea.success ? idea.data.distance : (candidate?.content.distance ?? 'near')}`,
           root: node.type === 'ROOT_PROMPT',
           testId: `graph-node-${node.type === 'ROOT_PROMPT' ? 'root' : 'idea'}`,
+          status: node.status,
+          active: projectData.project.activeNodeId === node.id,
+          edited: node.userEdited,
+          operator: node.operator,
         },
-        position: { x: 0, y: 0 },
+        position: positions.get(node.id) ?? { x: 0, y: 0 },
         width: 252,
         height: node.type === 'ROOT_PROMPT' ? 124 : 112,
         selected: node.id === selectedNodeId,
       }
     })
-    const graphEdges: Edge[] = projectData.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.parentId,
-      target: edge.childId,
-    }))
-    return layoutWithDagre(rawNodes, graphEdges)
-  }, [projectData, selectedNodeId])
+    const layout = layoutWithDagre(rawNodes, graphEdges)
+    const laidOut = new Map(layout.map((node) => [node.id, node.position]))
+    const hadPositions = positions.size > 0
+    const byId = new Map(visible.map((node) => [node.id, node]))
+    return layout.map((node) => {
+      let position = positions.get(node.id) ?? laidOut.get(node.id)!
+      if (!positions.has(node.id) && hadPositions) {
+        const edge = projectData.edges.find((item) => item.childId === node.id)
+        const parentPosition = edge ? positions.get(edge.parentId) : undefined
+        if (edge && parentPosition) {
+          const siblings = projectData.edges
+            .filter((item) => item.parentId === edge.parentId)
+            .sort((left, right) => {
+              const leftPosition = byId.get(left.childId)?.displayPosition ?? 0
+              const rightPosition =
+                byId.get(right.childId)?.displayPosition ?? 0
+              return leftPosition - rightPosition
+            })
+          const index = siblings.findIndex((item) => item.childId === node.id)
+          position = {
+            x: parentPosition.x + (index - (siblings.length - 1) / 2) * 280,
+            y: parentPosition.y + 190,
+          }
+        }
+      }
+      positions.set(node.id, position)
+      return { ...node, position }
+    })
+  }, [projectData, revealArchived, selectedNodeId])
 
-  const graphEdges = useMemo<Edge[]>(
-    () =>
-      (projectData?.edges ?? []).map((edge) => ({
+  const graphEdges = useMemo<Edge[]>(() => {
+    const visibleIds = new Set(graphNodes.map((node) => node.id))
+    return (projectData?.edges ?? [])
+      .filter(
+        (edge) => visibleIds.has(edge.parentId) && visibleIds.has(edge.childId),
+      )
+      .map((edge) => ({
         id: edge.id,
         source: edge.parentId,
         target: edge.childId,
-      })),
-    [projectData],
-  )
-
-  const graphFitKey = useMemo(
-    () =>
-      JSON.stringify({
-        size: graphContainerSize,
-        nodes: graphNodes.map(
-          ({ id, position, width, height, selected, data }) => ({
-            id,
-            position,
-            width,
-            height,
-            selected,
-            title: data.title,
-            subtitle: data.subtitle,
-          }),
-        ),
-      }),
-    [graphContainerSize, graphNodes],
-  )
+      }))
+  }, [graphNodes, projectData])
 
   useEffect(() => {
     const graphContainer = graphContainerRef.current
     if (!graphContainer || typeof ResizeObserver === 'undefined') return
-
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return
       const { width, height } = entry.contentRect
+      if (!width || !height) return
       const size = `${Math.round(width)}x${Math.round(height)}`
-      setGraphContainerSize((current) => (current === size ? current : size))
+      const previousSize = graphSizeRef.current
+      graphSizeRef.current = size
+      if (previousSize === null || previousSize === size) return
+      requestAnimationFrame(() => {
+        void graphInstanceRef.current?.fitView({ padding: 0.2 })
+      })
     })
     observer.observe(graphContainer)
     return () => observer.disconnect()
   }, [projectData])
+
+  useEffect(() => {
+    if (
+      !projectData ||
+      !graphInstanceRef.current ||
+      graphFittedProjectRef.current === projectData.project.id
+    )
+      return
+    const frame = requestAnimationFrame(() => {
+      void graphInstanceRef.current?.fitView({ padding: 0.2 })
+      graphFittedProjectRef.current = projectData.project.id
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [graphNodes.length, projectData])
 
   const closeInspector = useCallback(() => {
     if (projectData) updateUrl(projectData.project.id, null)
     setSelectedNodeId(null)
     previousFocusRef.current?.focus()
   }, [projectData])
+
+  const refreshProject = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['projects', projectId] })
+  }, [projectId, queryClient])
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 640px)')
@@ -278,6 +353,17 @@ export function App() {
     setInitialNodePending(false)
     setUiError(null)
     updateUrl(id, null)
+  }
+
+  function toggleRevealArchived() {
+    setRevealArchived((current) => {
+      const reveal = !current
+      const url = new URL(window.location.href)
+      if (reveal) url.searchParams.set('reveal', '1')
+      else url.searchParams.delete('reveal')
+      window.history.replaceState(null, '', url)
+      return reveal
+    })
   }
 
   const modelMode = health.data?.modelMode
@@ -442,6 +528,16 @@ export function App() {
                     directions
                   </p>
                 )}
+                <button
+                  type="button"
+                  className="secondary-button reveal-toggle"
+                  aria-pressed={revealArchived}
+                  onClick={toggleRevealArchived}
+                >
+                  {revealArchived
+                    ? 'Hide rejected and archived'
+                    : 'Reveal rejected and archived'}
+                </button>
               </div>
               {isFailed && (
                 <div
@@ -474,7 +570,6 @@ export function App() {
                 aria-label="Idea graph"
               >
                 <ReactFlow
-                  key={graphFitKey}
                   nodes={graphNodes}
                   edges={graphEdges}
                   nodeTypes={nodeTypes}
@@ -482,7 +577,19 @@ export function App() {
                   nodesConnectable={false}
                   elementsSelectable={false}
                   onNodeClick={(_, node) => openNode(node.id)}
-                  fitView
+                  onInit={(instance) => {
+                    graphInstanceRef.current = instance
+                    if (
+                      projectData &&
+                      graphFittedProjectRef.current !== projectData.project.id
+                    ) {
+                      requestAnimationFrame(() => {
+                        void instance.fitView({ padding: 0.2 })
+                        graphFittedProjectRef.current = projectData.project.id
+                      })
+                    }
+                  }}
+                  fitView={false}
                   fitViewOptions={{ padding: 0.2 }}
                   minZoom={0.2}
                   proOptions={{ hideAttribution: true }}
@@ -496,6 +603,11 @@ export function App() {
                   node={selectedNode}
                   candidate={selectedCandidate}
                   isMobile={isMobile}
+                  projectId={projectData.project.id}
+                  activeNodeId={projectData.project.activeNodeId}
+                  mockScenario={mockScenario}
+                  useMockScenario={modelMode === 'mock'}
+                  onChanged={refreshProject}
                   closeButtonRef={closeButtonRef}
                   onClose={closeInspector}
                 />
@@ -510,9 +622,19 @@ export function App() {
 
 function GraphCard({ data }: NodeProps<Node<GraphNodeData>>) {
   return (
-    <div className="graph-card" data-testid={data.testId}>
+    <div
+      className={`graph-card status-${data.status.toLowerCase()} ${data.active ? 'is-active' : ''} ${data.edited ? 'is-edited' : ''}`}
+      data-testid={data.testId}
+    >
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <button type="button" aria-label={`Open ${data.title}`}>
+        <span className="graph-card-badges">
+          <span className={`status-badge status-${data.status.toLowerCase()}`}>
+            Status: {data.status.toLowerCase()}
+          </span>
+          {data.active && <span className="state-badge">Active</span>}
+          {data.edited && <span className="state-badge">Edited</span>}
+        </span>
         <span className="graph-card-title">{data.title}</span>
         <span className={data.root ? 'graph-card-root' : 'graph-card-subtitle'}>
           {data.subtitle}
@@ -527,15 +649,27 @@ function Inspector({
   node,
   candidate,
   isMobile,
+  projectId,
+  activeNodeId,
+  mockScenario,
+  useMockScenario,
+  onChanged,
   closeButtonRef,
   onClose,
 }: {
   node: GraphNodeDto
   candidate: CandidateDto | null
   isMobile: boolean
+  projectId: string
+  activeNodeId: string | null
+  mockScenario: MockScenario
+  useMockScenario: boolean
+  onChanged: () => Promise<void>
   closeButtonRef: RefObject<HTMLButtonElement | null>
   onClose: () => void
 }) {
+  const parsedContent = IdeaContentSchema.safeParse(node.content)
+  const content = parsedContent.success ? parsedContent.data : null
   return (
     <aside
       className={`inspector ${isMobile ? 'inspector-mobile' : 'inspector-desktop'}`}
@@ -561,78 +695,87 @@ function Inspector({
           ×
         </button>
       </div>
-      {candidate ? (
+      {content ? (
         <div className="inspector-content">
-          <InspectorSection title="Summary">
-            {candidate.content.summary}
-          </InspectorSection>
+          <InspectorSection title="Summary">{content.summary}</InspectorSection>
           <InspectorSection title="Preserved intent">
-            {candidate.content.preservedIntent}
+            {content.preservedIntent}
           </InspectorSection>
           <InspectorSection title="Changed assumptions">
             <ul>
-              {candidate.content.changedAssumptions.map((assumption) => (
+              {content.changedAssumptions.map((assumption) => (
                 <li key={assumption}>{assumption}</li>
               ))}
             </ul>
           </InspectorSection>
           <InspectorSection title="Why it might fit">
-            {candidate.content.fitRationale}
+            {content.fitRationale}
           </InspectorSection>
           <InspectorSection title="Strongest objection">
-            {candidate.content.strongestObjection}
+            {content.strongestObjection}
           </InspectorSection>
           <InspectorSection title="First test">
-            {candidate.content.firstTest}
+            {content.firstTest}
           </InspectorSection>
           <InspectorSection title="Mechanism">
-            {candidate.content.mechanism}
+            {content.mechanism}
           </InspectorSection>
           <InspectorSection title="Facets">
             <div className="facet-list">
-              {candidate.content.facets.map((facet) => (
+              {content.facets.map((facet) => (
                 <span key={facet}>{facet}</span>
               ))}
             </div>
           </InspectorSection>
           <InspectorSection title="Hypothesis — not confirmed intent">
-            <p>{candidate.hypothesis.statement}</p>
+            <p>{content.hypothesis.statement}</p>
             <h4>Assumptions</h4>
             <ul>
-              {candidate.hypothesis.assumptions.map((assumption) => (
+              {content.hypothesis.assumptions.map((assumption) => (
                 <li key={assumption}>{assumption}</li>
               ))}
             </ul>
             <h4>Falsifiers</h4>
             <ul>
-              {candidate.hypothesis.falsifiers.map((falsifier) => (
+              {content.hypothesis.falsifiers.map((falsifier) => (
                 <li key={falsifier}>{falsifier}</li>
               ))}
             </ul>
           </InspectorSection>
-          <InspectorSection title="Constraint uncertainty">
-            {candidate.constraintEvaluations.some(
-              (item) => item.status === 'unknown',
-            ) ? (
-              <ul>
-                {candidate.constraintEvaluations
-                  .filter((item) => item.status === 'unknown')
-                  .map((item) => (
-                    <li key={item.constraintRef}>
-                      {item.text ?? item.constraintRef} — unknown
-                    </li>
-                  ))}
-              </ul>
-            ) : (
-              <p>No unresolved constraints.</p>
-            )}
-          </InspectorSection>
+          {candidate && (
+            <InspectorSection title="Constraint uncertainty">
+              {candidate.constraintEvaluations.some(
+                (item) => item.status === 'unknown',
+              ) ? (
+                <ul>
+                  {candidate.constraintEvaluations
+                    .filter((item) => item.status === 'unknown')
+                    .map((item) => (
+                      <li key={item.constraintRef}>
+                        {item.text ?? item.constraintRef} — unknown
+                      </li>
+                    ))}
+                </ul>
+              ) : (
+                <p>No unresolved constraints.</p>
+              )}
+            </InspectorSection>
+          )}
         </div>
       ) : (
         <div className="inspector-content">
           <InspectorSection title="Prompt">{node.summary}</InspectorSection>
         </div>
       )}
+      <Stage2Controls
+        projectId={projectId}
+        node={node}
+        activeNodeId={activeNodeId}
+        mobile={isMobile}
+        mockScenario={mockScenario}
+        useMockScenario={useMockScenario}
+        onChanged={onChanged}
+      />
     </aside>
   )
 }

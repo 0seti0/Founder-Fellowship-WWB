@@ -1,3 +1,122 @@
+.graph-card-badges,
+.steering-actions,
+.graph-card-badges .state-badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.graph-card-badges {
+  margin-bottom: 0.45rem;
+}
+
+.status-badge,
+.state-badge {
+  border-radius: 999px;
+  background: #ece8dc;
+  color: #4c5047;
+  font-size: 0.65rem;
+  font-weight: 650;
+  padding: 0.18rem 0.45rem;
+  text-transform: capitalize;
+}
+
+.status-pinned {
+  border-color: #8a744d;
+}
+
+.status-rejected,
+.status-archived {
+  opacity: 0.72;
+}
+
+.graph-card.is-active {
+  outline: 2px solid #476a56;
+}
+
+.graph-card.is-edited {
+  box-shadow: 0 0 0 2px #d4a754;
+}
+
+.workspace-heading {
+  align-items: center;
+}
+
+.reveal-toggle {
+  margin-left: auto;
+}
+
+.stage2-controls,
+.operator-options,
+.idea-editor {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.stage2-controls {
+  border-top: 1px solid #e5e1d7;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.steering-actions {
+  gap: 0.5rem;
+}
+
+.steering-actions button,
+.operator-option button,
+.idea-editor button {
+  border: 1px solid #bcb9af;
+  border-radius: 0.5rem;
+  background: #fffefa;
+  color: #252820;
+  cursor: pointer;
+  padding: 0.5rem 0.7rem;
+}
+
+.steering-actions button:disabled,
+.operator-option button:disabled,
+.idea-editor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.operator-option {
+  border: 1px solid #e5e1d7;
+  border-radius: 0.65rem;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.65rem;
+}
+
+.operator-option p,
+.root-transform-note {
+  color: #64665d;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.operator-option label,
+.idea-editor label {
+  display: grid;
+  font-size: 0.82rem;
+  gap: 0.3rem;
+}
+
+.operator-option select,
+.idea-editor input,
+.idea-editor textarea {
+  border: 1px solid #cbc8bd;
+  border-radius: 0.4rem;
+  font: inherit;
+  padding: 0.5rem;
+  width: 100%;
+}
+
+.idea-editor {
+  border-top: 1px solid #e5e1d7;
+  padding-top: 0.8rem;
+}
 @import 'tailwindcss';
 
 :root {
