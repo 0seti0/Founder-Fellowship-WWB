@@ -1,6 +1,19 @@
 import { z } from 'zod'
 
 export const ModelModeSchema = z.enum(['mock', 'live'])
+export const UnaryOperatorSchema = z.enum([
+  'GROUND',
+  'REFRAME',
+  'LEAP',
+  'INVERT',
+  'TRANSPLANT',
+])
+export const NodeStatusSchema = z.enum([
+  'VISIBLE',
+  'PINNED',
+  'REJECTED',
+  'ARCHIVED',
+])
 
 export const HealthStatusSchema = z.object({
   status: z.literal('ok'),
@@ -27,6 +40,8 @@ export const MockScenarioSchema = z.enum([
   'few-pass',
   'none-pass',
   'weak-diverse',
+  'operator-mismatch',
+  'operator-gaps',
   'provider-error',
   'timeout',
   'embedding-failure',
@@ -107,6 +122,53 @@ export const FrameOutputSchema = z
   })
   .strict()
 
+export const IdeaContentSchema = FrameCandidateSchema.extend({
+  invertedAssumption: z.string().trim().min(1).optional(),
+  targetContext: z.string().trim().min(1).optional(),
+}).strict()
+
+export const ExpansionCandidateSchema = IdeaContentSchema
+
+export const ExpandOutputSchema = z
+  .object({
+    operator: UnaryOperatorSchema,
+    candidates: z.array(ExpansionCandidateSchema).min(4).max(8),
+  })
+  .strict()
+
+export const EditableIdeaFieldsSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120).optional(),
+    summary: z.string().trim().min(1).max(600).optional(),
+    preservedIntent: z.string().trim().min(1).optional(),
+    changedAssumptions: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(6)
+      .optional(),
+    fitRationale: z.string().trim().min(1).optional(),
+    strongestObjection: z.string().trim().min(1).optional(),
+    firstTest: z.string().trim().min(1).optional(),
+    mechanism: z.string().trim().min(1).optional(),
+    facets: z.array(z.string().trim().min(1)).min(1).max(6).optional(),
+  })
+  .strict()
+  .refine((fields) => Object.keys(fields).length > 0)
+
+export const OperatorOptionSchema = z
+  .object({
+    operator: UnaryOperatorSchema,
+    label: z.string(),
+    description: z.string(),
+    eligible: z.boolean(),
+    code: z.string().nullable(),
+    reason: z.string().nullable(),
+    suitability: z.number().min(0).max(1),
+    suggested: z.boolean(),
+    assumptions: z.array(z.string()),
+  })
+  .strict()
+
 export const EvaluationDimensionSchema = z
   .object({
     label: z.enum(['low', 'medium', 'high']),
@@ -143,6 +205,7 @@ export const ProjectSchema = z
     id: z.string().uuid(),
     title: z.string(),
     originalPrompt: z.string(),
+    activeNodeId: z.string().uuid().nullable(),
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
   })
@@ -153,15 +216,18 @@ export const GraphNodeSchema = z
     id: z.string().uuid(),
     projectId: z.string().uuid(),
     type: z.enum(['ROOT_PROMPT', 'IDEA']),
-    origin: z.enum(['PROMPT', 'INITIAL_FRAME']),
-    operator: z.string().nullable(),
+    origin: z.enum(['PROMPT', 'INITIAL_FRAME', 'OPERATOR_EXPANSION']),
+    operator: UnaryOperatorSchema.nullable(),
     runId: z.string().uuid().nullable(),
     candidateId: z.string().uuid().nullable(),
     title: z.string(),
     summary: z.string(),
     content: z.record(z.string(), z.unknown()),
     displayPosition: z.number().int().nullable(),
+    status: NodeStatusSchema,
+    userEdited: z.boolean(),
     createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
   })
   .strict()
 
@@ -189,8 +255,15 @@ export const ConstraintEvaluationDtoSchema = z
 export const CandidateDtoSchema = z
   .object({
     id: z.string().uuid(),
+    runId: z.string().uuid(),
     ordinal: z.number().int(),
-    content: FrameCandidateSchema,
+    operator: UnaryOperatorSchema.nullable(),
+    operatorRegistryVersion: z.string().nullable(),
+    suitabilityScore: z.number().nullable(),
+    selectionScore: z.number().nullable(),
+    planningMetadata: z.record(z.string(), z.unknown()).nullable(),
+    duplicateOfNodeId: z.string().uuid().nullable(),
+    content: IdeaContentSchema,
     constraintEvaluations: z.array(ConstraintEvaluationDtoSchema),
     quality: z
       .object({
@@ -214,17 +287,15 @@ export const GenerationRunSchema = z
   .object({
     id: z.string().uuid(),
     projectId: z.string().uuid(),
-    kind: z.literal('INITIAL'),
+    kind: z.enum(['INITIAL', 'EXPANSION']),
     status: z.enum(['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED']),
     modelProvider: z.string(),
     modelName: z.string(),
-    promptVersions: z
-      .object({
-        extract: z.string(),
-        frame: z.string(),
-        evaluate: z.string(),
-      })
-      .strict(),
+    promptVersions: z.record(z.string(), z.string()),
+    operator: UnaryOperatorSchema.nullable(),
+    parentNodeId: z.string().uuid().nullable(),
+    operatorRegistryVersion: z.string().nullable(),
+    planningFeatures: z.record(z.string(), z.unknown()).nullable(),
     schemaVersion: z.string(),
     selectionPolicyVersion: z.string(),
     dedupMode: z.enum(['EMBEDDING', 'TEXT_FALLBACK']).nullable(),
@@ -264,6 +335,13 @@ export const GenerationEventSchema = z
       'GENERATION_FAILED',
       'SLATE_DISPLAYED',
       'NODE_OPENED',
+      'NODE_EXPANDED',
+      'NODE_PINNED',
+      'NODE_UNPINNED',
+      'NODE_REJECTED',
+      'NODE_ARCHIVED',
+      'NODE_EDITED',
+      'ACTIVE_NODE_CHANGED',
     ]),
     payload: z.record(z.string(), z.unknown()),
     dedupeKey: z.string().nullable(),
@@ -272,6 +350,8 @@ export const GenerationEventSchema = z
   .strict()
 
 export type ModelMode = z.infer<typeof ModelModeSchema>
+export type UnaryOperator = z.infer<typeof UnaryOperatorSchema>
+export type NodeStatus = z.infer<typeof NodeStatusSchema>
 export type MockScenario = z.infer<typeof MockScenarioSchema>
 export type Axes = z.infer<typeof AxesSchema>
 export type ExtractedFact = z.infer<typeof ExtractedFactSchema>
@@ -280,6 +360,10 @@ export type ExtractionOutput = z.infer<typeof ExtractionOutputSchema>
 export type Hypothesis = z.infer<typeof HypothesisSchema>
 export type FrameCandidate = z.infer<typeof FrameCandidateSchema>
 export type FrameOutput = z.infer<typeof FrameOutputSchema>
+export type IdeaContent = z.infer<typeof IdeaContentSchema>
+export type ExpansionCandidate = z.infer<typeof ExpansionCandidateSchema>
+export type ExpandOutput = z.infer<typeof ExpandOutputSchema>
+export type EditableIdeaFields = z.infer<typeof EditableIdeaFieldsSchema>
 export type CandidateEvaluation = z.infer<typeof CandidateEvaluationSchema>
 export type EvaluateOutput = z.infer<typeof EvaluateOutputSchema>
 export type ProjectDto = z.infer<typeof ProjectSchema>
