@@ -122,7 +122,7 @@ class MockProvider implements ModelProvider {
     const facts: ExtractedFact[] = []
     const constraints: ExtractedConstraint[] = []
     const explicitMarker =
-      /\b(?:must|need to|have to|cannot|can't|don't want|no more than|under|only|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?),?|within|without)\b/i
+      /\b(?:must(?:\s+not|n['’]t)?|need to|have to|cannot|can['’]t|do(?:\s+not|n['’]t)\s+want(?:\s+to)?|no more than|no|under|only|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?),?|within|without|never)\b/i
     const softMarker = /\b(?:ideally|prefer|would like|i'd like|hopefully)\b/i
 
     for (const rawClause of prompt.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
@@ -228,17 +228,17 @@ class MockProvider implements ModelProvider {
 
         return {
           candidateKey: candidate.key,
-          constraints: constraints.map((constraint, constraintIndex) => {
-            let status: 'satisfied' | 'violated' | 'unknown' = 'satisfied'
+          constraints: constraints.map((constraint) => {
+            let status: 'satisfied' | 'violated' | 'unknown' =
+              constraint.strength === 'hard'
+                ? evaluateHardConstraint(candidate, constraint)
+                : 'satisfied'
             if (this.scenario === 'hard-violation') {
               if (index === 0 && constraint.strength === 'hard')
                 status = 'violated'
               else if (index === 1 && constraint.strength === 'hard')
                 status = 'unknown'
-            } else if (
-              constraint.strength === 'soft' ||
-              (index === 2 && constraintIndex === 0)
-            ) {
+            } else if (constraint.strength === 'soft') {
               status = 'unknown'
             }
             return {
@@ -279,6 +279,111 @@ class MockProvider implements ModelProvider {
     )
     return { evaluations }
   }
+}
+
+const constraintStopWords = new Set([
+  'a',
+  'an',
+  'anybody',
+  'anyone',
+  'anything',
+  'are',
+  'as',
+  'at',
+  'be',
+  'by',
+  'for',
+  'from',
+  'in',
+  'is',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'our',
+  'someone',
+  'something',
+  'the',
+  'their',
+  'them',
+  'there',
+  'this',
+  'to',
+  'us',
+  'we',
+  'with',
+  'you',
+  'your',
+])
+
+const constraintSynonyms: Record<string, string[]> = {
+  contact: [
+    'contact',
+    'interview',
+    'ask',
+    'invite',
+    'survey',
+    'call',
+    'email',
+    'message',
+    'talk',
+    'meet',
+    'reach out',
+  ],
+  money: ['spend', 'buy', 'pay', 'cost', 'budget', 'purchase'],
+  spend: ['spend', 'buy', 'pay', 'cost', 'budget', 'purchase'],
+}
+
+function evaluateHardConstraint(
+  candidate: FrameCandidate,
+  constraint: ExtractedConstraint,
+): 'violated' | 'unknown' {
+  const negation = constraint.evidence.match(
+    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no|without|never)\b\s+(.+)/i,
+  )
+  if (!negation?.[1]) return 'unknown'
+
+  const terms = (negation[1].toLowerCase().match(/[a-z]+/g) ?? [])
+    .filter((word) => !constraintStopWords.has(word))
+    .slice(0, 3)
+  if (!terms.length) return 'unknown'
+
+  const candidateText = [
+    candidate.title,
+    candidate.summary,
+    candidate.mechanism,
+    candidate.firstTest,
+  ].join(' ')
+  const candidateWords = stemWords(candidateText)
+  for (const term of terms) {
+    const normalizedTerm = stemWord(term)
+    const expansions = constraintSynonyms[normalizedTerm] ?? [normalizedTerm]
+    if (
+      expansions.some((expansion) =>
+        includesWordSequence(candidateWords, stemWords(expansion)),
+      )
+    ) {
+      return 'violated'
+    }
+  }
+  return 'unknown'
+}
+
+function stemWords(value: string) {
+  return (value.toLowerCase().match(/[a-z]+/g) ?? []).map(stemWord)
+}
+
+function stemWord(word: string) {
+  return word.replace(/(?:ing|ed|s)$/i, '')
+}
+
+function includesWordSequence(words: string[], sequence: string[]) {
+  if (!sequence.length) return false
+  return words.some((_, index) =>
+    sequence.every((word, offset) => words[index + offset] === word),
+  )
 }
 
 type Archetype = {
@@ -607,6 +712,8 @@ function getSubject(prompt: string) {
     /^(?:an?\s+|the\s+)?(?:idea|concept|project|plan)\s+(?:of|for)\s+/i,
     '',
   )
+  const sentenceBoundary = phrase.search(/[.!?]/)
+  if (sentenceBoundary >= 0) phrase = phrase.slice(0, sentenceBoundary)
   const clauseBoundary =
     /\b(?:for|who|that|which|so|because|whether|to|where|when|while|if|can|could|should|will|would|may|might|must|is|are|has|have|needs?|wants?)\b|[,;:]/i
   const boundaryIndex = phrase.search(clauseBoundary)

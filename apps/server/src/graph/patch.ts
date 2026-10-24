@@ -53,7 +53,26 @@ export async function applyGraphPatch(
       .from(projects)
       .where(eq(projects.id, patch.projectId))
       .limit(1)
+      .for('update')
     if (!project) throw new GraphPatchError('Project does not exist')
+
+    const [succeededInitialRun] = await tx
+      .select({ id: generationRuns.id })
+      .from(generationRuns)
+      .where(
+        and(
+          eq(generationRuns.projectId, patch.projectId),
+          eq(generationRuns.kind, 'INITIAL'),
+          eq(generationRuns.status, 'SUCCEEDED'),
+        ),
+      )
+      .limit(1)
+    if (succeededInitialRun) {
+      throw new GraphPatchError(
+        'An initial generation has already succeeded',
+        'INITIAL_ALREADY_GENERATED',
+      )
+    }
 
     const [run] = await tx
       .select()

@@ -24,6 +24,8 @@ import {
 
 export const SCHEMA_VERSION = 'stage1-v1'
 export const SELECTION_POLICY_VERSION = 'initial-mmr-v1'
+export const EMBEDDING_DEDUP_THRESHOLD = 0.92
+export const TEXT_FALLBACK_DEDUP_THRESHOLD = 0.8
 
 export type PipelineAttempt = {
   task: 'extract' | 'frame' | 'evaluate' | 'dedupe' | 'selection'
@@ -561,7 +563,13 @@ async function completePipeline({
     )
   }
   attempts.push({ task: 'dedupe', ok: true, reason: dedupMode })
-  markDuplicates(eligible, similarities)
+  markDuplicates(
+    eligible,
+    similarities,
+    dedupMode === 'EMBEDDING'
+      ? EMBEDDING_DEDUP_THRESHOLD
+      : TEXT_FALLBACK_DEDUP_THRESHOLD,
+  )
   selectCandidates(candidates, eligible, similarities)
   attempts.push({
     task: 'selection',
@@ -625,7 +633,11 @@ function isGenericFirstTest(value: string) {
   return false
 }
 
-function markDuplicates(eligible: ScoredCandidate[], similarities: number[][]) {
+function markDuplicates(
+  eligible: ScoredCandidate[],
+  similarities: number[][],
+  threshold: number,
+) {
   const parent = eligible.map((_, index) => index)
   const find = (index: number): number => {
     if (parent[index] !== index) parent[index] = find(parent[index]!)
@@ -638,7 +650,7 @@ function markDuplicates(eligible: ScoredCandidate[], similarities: number[][]) {
   }
   for (let left = 0; left < eligible.length; left += 1) {
     for (let right = left + 1; right < eligible.length; right += 1) {
-      if (similarities[left]![right]! >= 0.92) join(left, right)
+      if (similarities[left]![right]! >= threshold) join(left, right)
     }
   }
   const clusters = new Map<number, number[]>()

@@ -79,7 +79,7 @@ export async function createProject(
       runId: null,
       candidateId: null,
       title: 'Your prompt',
-      summary: options.prompt,
+      summary: options.prompt.slice(0, 600),
       content: { prompt: options.prompt },
       displayPosition: null,
       createdAt,

@@ -182,4 +182,80 @@ describe('MySQL integration', () => {
       'GENERATION_FAILED',
     )
   })
+
+  it('stores long prompts in full while bounding the root summary', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const longPrompt = `I want to open a bakery. ${'x'.repeat(2975)}`
+    expect(longPrompt).toHaveLength(3000)
+
+    const created = await caller.projects.create({ prompt: longPrompt })
+    expect(created.status).toBe('SUCCEEDED')
+
+    const project = await caller.projects.get({ id: created.projectId })
+    const root = project.nodes.find((node) => node.type === 'ROOT_PROMPT')
+    expect(project.project.originalPrompt).toBe(longPrompt)
+    expect(root?.summary).toBe(longPrompt.slice(0, 600))
+    expect(root?.content).toEqual({ prompt: longPrompt })
+    expect(project.project.title.length).toBeLessThanOrEqual(191)
+  })
+
+  it('allows only one concurrent initial generation to materialize ideas', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const failed = await caller.projects.create({
+      prompt: 'I want to open a bakery.',
+      mockScenario: 'provider-error',
+    })
+    expect(failed.status).toBe('FAILED')
+
+    const results = await Promise.all([
+      caller.projects.generateInitial({ projectId: failed.projectId }),
+      caller.projects.generateInitial({ projectId: failed.projectId }),
+    ])
+    expect(
+      results.filter((result) => result.status === 'SUCCEEDED'),
+    ).toHaveLength(1)
+    expect(
+      results.filter(
+        (result) =>
+          result.status === 'FAILED' &&
+          result.errorCode === 'INITIAL_ALREADY_GENERATED',
+      ),
+    ).toHaveLength(1)
+
+    const { db } = getDatabase(databaseUrl)
+    const runs = await db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.projectId, failed.projectId))
+    const succeededRuns = runs.filter(
+      (run) => run.kind === 'INITIAL' && run.status === 'SUCCEEDED',
+    )
+    const losingRuns = runs.filter(
+      (run) => run.errorCode === 'INITIAL_ALREADY_GENERATED',
+    )
+    expect(succeededRuns).toHaveLength(1)
+    expect(losingRuns).toHaveLength(1)
+    expect(losingRuns[0]?.status).toBe('FAILED')
+
+    const ideaNodes = await db
+      .select()
+      .from(nodes)
+      .where(and(eq(nodes.projectId, failed.projectId), eq(nodes.type, 'IDEA')))
+    expect(ideaNodes).toHaveLength(4)
+    expect(ideaNodes.every((node) => node.runId === succeededRuns[0]?.id)).toBe(
+      true,
+    )
+
+    const projectEvents = await caller.events.list({
+      projectId: failed.projectId,
+    })
+    expect(
+      projectEvents.some(
+        (event) =>
+          event.type === 'GENERATION_FAILED' &&
+          (event.payload as { code?: string }).code ===
+            'INITIAL_ALREADY_GENERATED',
+      ),
+    ).toBe(true)
+  })
 })

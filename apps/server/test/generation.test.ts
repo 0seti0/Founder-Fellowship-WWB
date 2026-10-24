@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { MockScenario } from '@unfold/shared'
-import { createModelProvider } from '../src/model/provider'
+import type { FrameCandidate, MockScenario } from '@unfold/shared'
+import { createModelProvider, type ModelProvider } from '../src/model/provider'
 import { generatePipeline, PipelineError } from '../src/generation/pipeline'
 
 const prompt = 'I want to open a bakery for neighbors.'
@@ -138,6 +138,40 @@ describe('initial generation pipeline', () => {
     expect(constrained.candidates[1]?.eligibility).toBe('ELIGIBLE')
   })
 
+  it('rejects candidates that violate a contact prohibition', async () => {
+    const result = await generateForPrompt(
+      'I want to open a bakery. I must not contact anyone.',
+    )
+    const displayed = result.candidates.filter(
+      (candidate) => candidate.selectionState === 'SELECTED',
+    )
+    const contactTerms =
+      /\b(?:contact|interview|ask|invite|survey|call|email|message|talk|meet|reach(?:\s+out)?)(?:s|ed|ing)?\b/i
+    const candidateText = (candidate: (typeof result.candidates)[number]) =>
+      [
+        candidate.content.title,
+        candidate.content.summary,
+        candidate.content.mechanism,
+        candidate.content.firstTest,
+      ].join(' ')
+
+    expect(displayed.length).toBeGreaterThan(0)
+    for (const candidate of displayed) {
+      expect(candidateText(candidate)).not.toMatch(contactTerms)
+    }
+
+    const violated = result.candidates.filter((candidate) =>
+      candidateText(candidate).match(contactTerms),
+    )
+    expect(violated.length).toBeGreaterThan(0)
+    for (const candidate of violated) {
+      expect(candidate.eligibility).toBe('REJECTED')
+      expect(candidate.rejectionReasons).toContain(
+        'HARD_CONSTRAINT_VIOLATED:c1',
+      )
+    }
+  })
+
   it('rejects low quality and generic first tests', async () => {
     const result = await generate('low-quality')
     expect(result.candidates[0]?.rejectionReasons).toContain(
@@ -179,6 +213,58 @@ describe('initial generation pipeline', () => {
     expect(result.dedupMode).toBe('TEXT_FALLBACK')
     expect(result.degraded).toBe(true)
     expect(result.degradationReason).toContain('Mock embedding failure')
+  })
+
+  it('clusters a text-fallback pair at approximately 0.85 Jaccard similarity', async () => {
+    const baseProvider = createModelProvider(
+      { MODEL_MODE: 'mock' },
+      { mockScenario: 'embedding-failure' },
+    )
+    const provider: ModelProvider = {
+      identity: baseProvider.identity,
+      async generateStructured(request) {
+        const output = await baseProvider.generateStructured(request)
+        if (request.task !== 'frame') return output
+
+        const { candidates } = output as { candidates: FrameCandidate[] }
+        return {
+          candidates: candidates.map((candidate, index) => {
+            if (index === 0) {
+              return {
+                ...candidate,
+                title: 'alpha bravo charlie delta echo foxtrot golf',
+                summary:
+                  'hotel india juliet kilo lima mike november oscar papa',
+                mechanism: 'quebec romeo',
+              }
+            }
+            if (index === 1) {
+              return {
+                ...candidate,
+                title: 'alpha bravo charlie delta echo foxtrot golf',
+                summary:
+                  'hotel india juliet kilo lima mike november oscar papa',
+                mechanism: 'quebec sierra tango',
+              }
+            }
+            return candidate
+          }),
+        }
+      },
+      embed: (texts, signal) => baseProvider.embed(texts, signal),
+    }
+
+    const result = await generatePipeline({
+      prompt,
+      provider,
+      timeoutMs,
+    })
+    expect(result.dedupMode).toBe('TEXT_FALLBACK')
+    expect(result.candidates[1]?.selectionState).toBe('DUPLICATE')
+    expect(result.candidates[1]?.dedupSimilarity).toBeCloseTo(0.85)
+    expect(result.candidates[1]?.duplicateOfCandidateId).toBe(
+      result.candidates[0]?.id,
+    )
   })
 
   it('records deterministic initial MMR selection metadata', async () => {
