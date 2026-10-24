@@ -1,12 +1,16 @@
 import {
   EvaluateOutputSchema,
+  ExpandOutputSchema,
   ExtractionOutputSchema,
   FrameOutputSchema,
   type CandidateEvaluation,
   type ExtractedConstraint,
   type ExtractedFact,
   type FrameCandidate,
+  type IdeaContent,
+  type UnaryOperator,
 } from '@unfold/shared'
+import { OPERATOR_REGISTRY } from '../operators/registry'
 import { randomUUID } from 'node:crypto'
 import {
   EVALUATE_PROMPT_VERSION,
@@ -15,6 +19,9 @@ import {
   EXTRACT_SYSTEM_PROMPT,
   FRAME_PROMPT_VERSION,
   FRAME_SYSTEM_PROMPT,
+  EXPAND_PROMPT_VERSION,
+  EXPAND_SCHEMA_VERSION,
+  EXPAND_SYSTEM_PROMPT,
 } from './prompts'
 import {
   ProviderError,
@@ -26,9 +33,10 @@ export const SCHEMA_VERSION = 'stage1-v1'
 export const SELECTION_POLICY_VERSION = 'initial-mmr-v2'
 export const EMBEDDING_DEDUP_THRESHOLD = 0.92
 export const TEXT_FALLBACK_DEDUP_THRESHOLD = 0.8
+export const EXPANSION_SELECTION_POLICY_VERSION = 'expansion-mmr-v1'
 
 export type PipelineAttempt = {
-  task: 'extract' | 'frame' | 'evaluate' | 'dedupe' | 'selection'
+  task: 'extract' | 'frame' | 'evaluate' | 'expand' | 'dedupe' | 'selection'
   attempt?: number
   ok: boolean
   code?: string
@@ -126,6 +134,150 @@ export async function generatePipeline({
     provider,
     timeoutMs,
     attempts,
+  })
+}
+
+export async function expandPipeline(options: {
+  operator: UnaryOperator
+  parent: IdeaContent
+  rootPrompt: string
+  facts: ExtractedFact[]
+  factIds?: Map<string, string>
+  constraints: ExtractedConstraint[]
+  assumption?: string
+  mechanism?: string
+  suitabilityScore?: number
+  provider: ModelProvider
+  timeoutMs: number
+  existingChildren?: Array<{
+    id: string
+    title: string
+    summary: string
+    mechanism: string
+  }>
+}) {
+  const attempts: PipelineAttempt[] = []
+  const definition = OPERATOR_REGISTRY[options.operator]
+  let content: IdeaContent[] | undefined
+  let effectRejections = new Map<string, string[]>()
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const response = await invoke(
+      options.provider,
+      {
+        task: 'expand',
+        promptVersion: EXPAND_PROMPT_VERSION,
+        schemaVersion: EXPAND_SCHEMA_VERSION,
+        system: EXPAND_SYSTEM_PROMPT,
+        input: {
+          operator: options.operator,
+          instruction: definition.instruction,
+          exclusions: definition.exclusions,
+          rootPrompt: options.rootPrompt,
+          parent: options.parent,
+          facts: options.facts,
+          constraints: options.constraints,
+          assumption: options.assumption,
+          mechanism: options.mechanism,
+          count: 6,
+        },
+      },
+      options.timeoutMs,
+      attempts,
+      attempt,
+    )
+    const parsed = ExpandOutputSchema.safeParse(response)
+    let errorCode = 'MALFORMED_OUTPUT'
+    let errorMessage = parsed.success ? '' : parsed.error.message
+    if (parsed.success) {
+      const validRefs = new Set(options.facts.map((fact) => fact.ref))
+      const valid = parsed.data.candidates.every((candidate) =>
+        candidate.hypothesis.supportingFactRefs.every((ref) =>
+          validRefs.has(ref),
+        ),
+      )
+      const unique =
+        new Set(parsed.data.candidates.map((candidate) => candidate.key))
+          .size === parsed.data.candidates.length
+      if (parsed.data.operator !== options.operator) {
+        errorCode = 'OPERATOR_MISMATCH'
+        errorMessage = 'Expansion operator did not match the requested operator'
+      } else if (!unique || !valid) {
+        errorCode = 'MALFORMED_OUTPUT'
+        errorMessage = !unique
+          ? 'Expansion candidate keys must be unique'
+          : 'Expansion cited a missing supporting fact'
+      } else {
+        effectRejections = new Map(
+          parsed.data.candidates.map((candidate) => [
+            candidate.key,
+            definition
+              .validateEffect(candidate, {
+                parents: [
+                  {
+                    id: 'parent',
+                    type: 'IDEA',
+                    status: 'VISIBLE',
+                    operator: null,
+                    content: options.parent,
+                  },
+                ],
+                assumption: options.assumption,
+              })
+              .map((code) => `OPERATOR_EFFECT:${code}`),
+          ]),
+        )
+        content = parsed.data.candidates
+      }
+    }
+    if (content) {
+      attempts.push({ task: 'expand', attempt, ok: true })
+      break
+    }
+    attempts.push({
+      task: 'expand',
+      attempt,
+      ok: false,
+      code: errorCode,
+      message: errorMessage,
+    })
+    if (attempt === 2)
+      throw new PipelineError(
+        errorMessage || 'Expansion output was invalid',
+        errorCode,
+        attempts,
+      )
+  }
+  const evaluations = await evaluate(
+    content!,
+    options.constraints,
+    options.provider,
+    options.timeoutMs,
+    attempts,
+  )
+  return completePipeline({
+    facts: options.facts.map((item) => ({
+      id: options.factIds?.get(item.ref) ?? randomUUID(),
+      item,
+      start: 0,
+      end: 0,
+    })),
+    constraints: options.constraints.map((item, index) => ({
+      id: `constraint-${index}`,
+      item,
+      start: 0,
+      end: 0,
+    })),
+    frameCandidates: content!,
+    evaluations,
+    provider: options.provider,
+    timeoutMs: options.timeoutMs,
+    attempts,
+    maximumSelected: 3,
+    policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
+    suitability: options.suitabilityScore ?? 0.5,
+    axisCoverage: true,
+    existingChildren: options.existingChildren ?? [],
+    additionalRejectionReasons: effectRejections,
   })
 }
 
@@ -425,6 +577,12 @@ async function completePipeline({
   provider,
   timeoutMs,
   attempts,
+  maximumSelected = 4,
+  policyVersion = SELECTION_POLICY_VERSION,
+  suitability = 0,
+  axisCoverage = true,
+  existingChildren = [],
+  additionalRejectionReasons = new Map(),
 }: {
   facts: EvidenceSpan[]
   constraints: EvidenceSpan[]
@@ -433,6 +591,17 @@ async function completePipeline({
   provider: ModelProvider
   timeoutMs: number
   attempts: PipelineAttempt[]
+  maximumSelected?: number
+  policyVersion?: string
+  suitability?: number
+  axisCoverage?: boolean
+  existingChildren?: Array<{
+    id: string
+    title: string
+    summary: string
+    mechanism: string
+  }>
+  additionalRejectionReasons?: Map<string, string[]>
 }): Promise<PipelineResult> {
   const promptFactIds = new Map<string, string>()
   for (const span of facts) {
@@ -452,6 +621,9 @@ async function completePipeline({
           0.2 * labelScore(evaluation.specificity.label)) /
         2
       const rejectionReasons: string[] = []
+      rejectionReasons.push(
+        ...(additionalRejectionReasons.get(content.key) ?? []),
+      )
       for (const [dimension, score] of [
         ['intentAlignment', evaluation.intentAlignment],
         ['usefulness', evaluation.usefulness],
@@ -497,7 +669,7 @@ async function completePipeline({
         selectionScore: null,
         selectionProbability: 0,
         selectionMetadata: {
-          policyVersion: SELECTION_POLICY_VERSION,
+          policyVersion,
           randomized: false,
           note: 'deterministic policy; selectionProbability is not a propensity for off-policy evaluation',
         },
@@ -515,25 +687,40 @@ async function completePipeline({
   let degraded = false
   let degradationReason: string | null = null
   let similarities: number[][]
+  let existingChildSimilarities: number[][] = []
   const eligible = candidates.filter(
     (candidate) => candidate.eligibility === 'ELIGIBLE',
   )
+  const candidateTexts = eligible.map((candidate) =>
+    [
+      candidate.content.title,
+      candidate.content.summary,
+      candidate.content.mechanism,
+    ].join(' '),
+  )
+  const existingChildTexts = existingChildren.map((child) =>
+    [child.title, child.summary, child.mechanism].join(' '),
+  )
   try {
     const vectors = await provider.embed(
-      eligible.map((candidate) =>
-        [
-          candidate.content.title,
-          candidate.content.summary,
-          candidate.content.mechanism,
-        ].join(' '),
-      ),
+      [...candidateTexts, ...existingChildTexts],
       AbortSignal.timeout(timeoutMs),
     )
-    if (!isValidEmbeddingSet(vectors, eligible.length)) {
+    if (
+      !isValidEmbeddingSet(vectors, eligible.length + existingChildren.length)
+    ) {
       throw new Error('Embedding provider returned an invalid vector shape')
     }
     similarities = makeSimilarityMatrix(eligible.length, (left, right) =>
       cosineSimilarity(vectors[left]!, vectors[right]!),
+    )
+    existingChildSimilarities = eligible.map((_, candidateIndex) =>
+      existingChildren.map((_, childIndex) =>
+        cosineSimilarity(
+          vectors[candidateIndex]!,
+          vectors[eligible.length + childIndex]!,
+        ),
+      ),
     )
   } catch (error) {
     // Keep the run usable when embeddings fail; record the degraded text-set fallback.
@@ -548,17 +735,11 @@ async function completePipeline({
       code: 'TEXT_FALLBACK',
     })
     similarities = makeSimilarityMatrix(eligible.length, (left, right) =>
-      textJaccard(
-        [
-          eligible[left]!.content.title,
-          eligible[left]!.content.summary,
-          eligible[left]!.content.mechanism,
-        ].join(' '),
-        [
-          eligible[right]!.content.title,
-          eligible[right]!.content.summary,
-          eligible[right]!.content.mechanism,
-        ].join(' '),
+      textJaccard(candidateTexts[left]!, candidateTexts[right]!),
+    )
+    existingChildSimilarities = candidateTexts.map((candidateText) =>
+      existingChildTexts.map((childText) =>
+        textJaccard(candidateText, childText),
       ),
     )
   }
@@ -570,7 +751,20 @@ async function completePipeline({
       ? EMBEDDING_DEDUP_THRESHOLD
       : TEXT_FALLBACK_DEDUP_THRESHOLD,
   )
-  selectCandidates(candidates, eligible, similarities)
+  markExistingChildDuplicates(
+    eligible,
+    existingChildren,
+    existingChildSimilarities,
+    dedupMode === 'EMBEDDING'
+      ? EMBEDDING_DEDUP_THRESHOLD
+      : TEXT_FALLBACK_DEDUP_THRESHOLD,
+  )
+  selectCandidates(candidates, eligible, similarities, {
+    maximumSelected,
+    policyVersion,
+    suitability,
+    axisCoverage,
+  })
   attempts.push({
     task: 'selection',
     ok: true,
@@ -675,16 +869,52 @@ function markDuplicates(
   }
 }
 
+function markExistingChildDuplicates(
+  eligible: ScoredCandidate[],
+  existingChildren: Array<{ id: string }>,
+  similarities: number[][],
+  threshold: number,
+) {
+  eligible.forEach((candidate, candidateIndex) => {
+    if (candidate.selectionState === 'DUPLICATE') return
+    let bestIndex = -1
+    let bestSimilarity = threshold
+    similarities[candidateIndex]?.forEach((similarity, childIndex) => {
+      if (similarity >= bestSimilarity) {
+        bestSimilarity = similarity
+        bestIndex = childIndex
+      }
+    })
+    if (bestIndex < 0) return
+    candidate.selectionState = 'DUPLICATE'
+    candidate.dedupSimilarity = bestSimilarity
+    candidate.selectionMetadata = {
+      ...candidate.selectionMetadata,
+      duplicateOfNodeId: existingChildren[bestIndex]!.id,
+    }
+  })
+}
+
 export function selectCandidates(
   candidates: ScoredCandidate[],
   eligible: ScoredCandidate[],
   similarities: number[][],
+  options: {
+    maximumSelected?: number
+    policyVersion?: string
+    suitability?: number
+    axisCoverage?: boolean
+  } = {},
 ) {
+  const maximumSelected = options.maximumSelected ?? 4
+  const policyVersion = options.policyVersion ?? SELECTION_POLICY_VERSION
+  const suitability = options.suitability ?? 0
+  const axisCoverage = options.axisCoverage ?? true
   const active = eligible.filter(
     (candidate) => candidate.selectionState !== 'DUPLICATE',
   )
   const selected: ScoredCandidate[] = []
-  while (selected.length < 4) {
+  while (selected.length < maximumSelected) {
     const ranked = active
       .filter((candidate) => !selected.includes(candidate))
       .map((candidate) => {
@@ -725,15 +955,17 @@ export function selectCandidates(
                   axisDifferenceCount(item.content, candidate.content),
                 ),
               )
-        const axisCoverageBonus = (0.04 * Math.min(2, minAxisDifference)) / 2
+        const axisCoverageBonus = axisCoverage
+          ? (0.04 * Math.min(2, minAxisDifference)) / 2
+          : 0
+        const suitabilityBonus = 0.05 * suitability
+        const baseScore = candidate.qualityScore + suitabilityBonus
         return {
           candidate,
-          score:
-            candidate.qualityScore +
-            facetBonus +
-            axisCoverageBonus -
-            redundancy,
+          score: baseScore + facetBonus + axisCoverageBonus - redundancy,
+          baseScore,
           facetBonus,
+          suitabilityBonus,
           axisCoverageBonus,
           redundancy,
         }
@@ -751,12 +983,14 @@ export function selectCandidates(
     next.candidate.selectionProbability = 1
     next.candidate.displayPosition = position
     next.candidate.selectionMetadata = {
-      policyVersion: SELECTION_POLICY_VERSION,
+      policyVersion,
       randomized: false,
       note: 'deterministic policy; selectionProbability is not a propensity for off-policy evaluation',
       rank: position,
       components: {
         qualityScore: next.candidate.qualityScore,
+        suitabilityBonus: next.suitabilityBonus,
+        baseScore: next.baseScore,
         facetBonus: next.facetBonus,
         axisCoverageBonus: next.axisCoverageBonus,
         redundancy: next.redundancy,

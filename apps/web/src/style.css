@@ -1,3 +1,147 @@
+.graph-card-badges,
+.steering-actions,
+.graph-card-badges .state-badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.graph-card-badges {
+  margin-bottom: 0.45rem;
+}
+
+.status-badge,
+.state-badge {
+  border-radius: 999px;
+  background: #ece8dc;
+  color: #4c5047;
+  font-size: 0.65rem;
+  font-weight: 650;
+  padding: 0.18rem 0.45rem;
+  text-transform: capitalize;
+}
+
+.status-pinned {
+  border-color: #8a744d;
+}
+
+.status-rejected {
+  border-color: #815f57;
+  background: #f1e7e3;
+  color: #603e38;
+}
+
+.status-archived {
+  background: #e7e5df;
+  color: #5e5a52;
+}
+
+.graph-card.is-active {
+  outline: 2px solid #476a56;
+}
+
+.graph-card.is-edited {
+  box-shadow: 0 0 0 2px #d4a754;
+}
+
+.workspace-heading {
+  align-items: center;
+}
+
+.reveal-toggle {
+  margin-left: auto;
+}
+
+.stage2-controls,
+.operator-options,
+.idea-editor {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.stage2-controls {
+  border-top: 1px solid #e5e1d7;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.steering-actions {
+  gap: 0.5rem;
+  border: 1px solid #e5e1d7;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+}
+
+.steering-actions button,
+.operator-option button,
+.idea-editor button {
+  border: 1px solid #bcb9af;
+  border-radius: 0.5rem;
+  background: #fffefa;
+  color: #252820;
+  cursor: pointer;
+  padding: 0.5rem 0.7rem;
+}
+
+.steering-actions button:disabled,
+.operator-option button:disabled,
+.idea-editor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.operator-option {
+  border: 1px solid #e5e1d7;
+  border-radius: 0.65rem;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.65rem;
+}
+
+.operator-options {
+  border: 1px solid #e5e1d7;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+}
+
+.expansion-notice {
+  margin: 0;
+  border: 1px solid #cdddcf;
+  border-radius: 0.65rem;
+  background: #edf6ee;
+  padding: 0.7rem 0.8rem;
+  color: #386746;
+  font-size: 0.84rem;
+}
+
+.operator-option p,
+.root-transform-note {
+  color: #64665d;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.operator-option label,
+.idea-editor label {
+  display: grid;
+  font-size: 0.82rem;
+  gap: 0.3rem;
+}
+
+.operator-option select,
+.idea-editor input,
+.idea-editor textarea {
+  border: 1px solid #cbc8bd;
+  border-radius: 0.4rem;
+  font: inherit;
+  padding: 0.5rem;
+  width: 100%;
+}
+
+.idea-editor {
+  border-top: 1px solid #e5e1d7;
+  padding-top: 0.8rem;
+}
 @import 'tailwindcss';
 
 :root {
@@ -389,6 +533,28 @@ select:focus-visible {
   border-radius: 13px;
   background: #fffefa;
   box-shadow: 0 5px 18px rgb(55 49 38 / 8%);
+}
+
+.graph-card.status-rejected {
+  border: 2px dashed #815f57;
+  background: #f1e7e3;
+}
+
+.graph-hidden-placeholder {
+  display: grid;
+  min-height: 46px;
+  place-items: center;
+  border: 1px dashed #aaa49a;
+  border-radius: 10px;
+  background: #f0eee9;
+  color: #716d65;
+  font-size: 11px;
+  padding: 8px 12px;
+}
+
+.graph-card.status-rejected .graph-card-title,
+.graph-card.status-rejected .graph-card-subtitle {
+  opacity: 0.68;
 }
 
 .react-flow__node.selected .graph-card {

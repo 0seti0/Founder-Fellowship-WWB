@@ -5,13 +5,15 @@ import type {
   ExtractedConstraint,
   ExtractedFact,
   ExtractionOutput,
+  IdeaContent,
   FrameCandidate,
   FrameOutput,
   MockScenario,
+  UnaryOperator,
 } from '@unfold/shared'
 import type { ModelMode } from '@unfold/shared'
 
-export type GenerationTask = 'extract' | 'frame' | 'evaluate'
+export type GenerationTask = 'extract' | 'frame' | 'evaluate' | 'expand'
 
 export type StructuredGenerationRequest = {
   task: GenerationTask
@@ -26,6 +28,343 @@ export type ModelProvider = {
   identity: { provider: string; model: string }
   generateStructured(request: StructuredGenerationRequest): Promise<unknown>
   embed(texts: string[], signal: AbortSignal): Promise<number[][]>
+}
+
+type ExpansionFixture = {
+  title: string
+  goal: string
+  facet: string
+  motivation: string
+  method: string
+  firstTest: string
+  beneficiary?: string
+  context?: string
+}
+
+const expansionFixtures: Record<UnaryOperator, ExpansionFixture[]> = {
+  GROUND: [
+    {
+      title: 'one-table tasting',
+      goal: 'learn which loaf sells',
+      facet: 'sampling',
+      motivation: 'quick feedback',
+      method: 'six-piece sample tray',
+      firstTest:
+        'Serve six sample portions at one neighborhood table and record purchases.',
+    },
+    {
+      title: 'single-morning pickup',
+      goal: 'test convenient collection',
+      facet: 'pickup',
+      motivation: 'less travel',
+      method: 'one-hour collection window',
+      firstTest:
+        'Offer a one-hour pickup window Saturday and count completed orders.',
+    },
+    {
+      title: 'three-item menu',
+      goal: 'find a dependable favorite',
+      facet: 'small menu',
+      motivation: 'simple choices',
+      method: 'three-recipe pilot menu',
+      firstTest:
+        'Bake three recipes and ask eight nearby families to rank them.',
+    },
+    {
+      title: 'refundable preorder',
+      goal: 'measure real willingness',
+      facet: 'preorder',
+      motivation: 'lower commitment',
+      method: 'refundable deposit test',
+      firstTest:
+        'Post a refundable preorder link and count deposits before Friday.',
+    },
+    {
+      title: 'weekend bake',
+      goal: 'check repeat demand',
+      facet: 'weekend pilot',
+      motivation: 'reliable routine',
+      method: 'one-weekend baking slot',
+      firstTest:
+        'Bake one weekend batch and record how many of five customers reorder.',
+    },
+    {
+      title: 'short delivery loop',
+      goal: 'verify nearby access',
+      facet: 'local route',
+      motivation: 'easy access',
+      method: 'four-stop delivery loop',
+      firstTest: 'Deliver four sample boxes nearby and record the travel time.',
+    },
+  ],
+  REFRAME: [
+    {
+      title: 'caregiver breakfast club',
+      goal: 'reduce morning pressure',
+      facet: 'caregivers',
+      motivation: 'time saved',
+      method: 'weekly breakfast subscription',
+      firstTest: 'Ask six caregivers to trial a weekly breakfast subscription.',
+      beneficiary: 'caregivers',
+    },
+    {
+      title: 'school pickup pantry',
+      goal: 'make snacks easier to reach',
+      facet: 'school access',
+      motivation: 'family convenience',
+      method: 'school-gate snack locker',
+      firstTest:
+        'Place a sample snack locker by a school and count family visits.',
+      beneficiary: 'school families',
+    },
+    {
+      title: 'workplace shared table',
+      goal: 'build team connection',
+      facet: 'workplace',
+      motivation: 'shared breaks',
+      method: 'office bread-tasting ritual',
+      firstTest: 'Host a workplace tasting and ask ten staff to book another.',
+      beneficiary: 'shift workers',
+    },
+    {
+      title: 'community pantry partner',
+      goal: 'reduce food waste',
+      facet: 'food access',
+      motivation: 'shared surplus',
+      method: 'surplus-bread exchange',
+      firstTest:
+        'Arrange a surplus-bread exchange with one pantry and track exchanges.',
+      beneficiary: 'pantry volunteers',
+    },
+    {
+      title: 'celebration order desk',
+      goal: 'make gatherings welcoming',
+      facet: 'events',
+      motivation: 'easy hosting',
+      method: 'custom event bundle',
+      firstTest:
+        'Offer three event bundles to five neighborhood hosts and track replies.',
+      beneficiary: 'neighborhood hosts',
+    },
+    {
+      title: 'welcome gift boxes',
+      goal: 'help newcomers feel included',
+      facet: 'newcomers',
+      motivation: 'belonging',
+      method: 'new-resident welcome box',
+      firstTest:
+        'Give four welcome boxes to new residents and track their feedback.',
+      beneficiary: 'new residents',
+    },
+  ],
+  LEAP: [
+    {
+      title: 'bread-backed skill exchange',
+      goal: 'spark mutual support',
+      facet: 'barter network',
+      motivation: 'shared skills',
+      method: 'bread-for-skills exchange',
+      firstTest:
+        'Trade sample loaves for six useful skills and count the exchanges.',
+    },
+    {
+      title: 'recipe commons',
+      goal: 'spread practical knowledge',
+      facet: 'open recipes',
+      motivation: 'shared learning',
+      method: 'community recipe license',
+      firstTest:
+        'Publish one open recipe and count adaptations from five groups.',
+    },
+    {
+      title: 'library-funded baking club',
+      goal: 'fund informal learning',
+      facet: 'library learning',
+      motivation: 'curiosity',
+      method: 'microgrant from bread sales',
+      firstTest:
+        'Donate proceeds from one bake and record the library circle attendance.',
+    },
+    {
+      title: 'neighborhood time bank',
+      goal: 'connect people who can help',
+      facet: 'time banking',
+      motivation: 'reciprocity',
+      method: 'loaf-credit time bank',
+      firstTest:
+        'Exchange six loaf credits for help and track completed exchanges.',
+    },
+    {
+      title: 'pop-up kitchen classroom',
+      goal: 'teach useful routines',
+      facet: 'mobile learning',
+      motivation: 'confidence',
+      method: 'traveling kitchen lesson',
+      firstTest:
+        'Teach one traveling kitchen lesson and ask eight learners to return.',
+    },
+    {
+      title: 'local maker incubator',
+      goal: 'help small makers launch',
+      facet: 'maker network',
+      motivation: 'entrepreneurship',
+      method: 'shared micro-batch incubator',
+      firstTest:
+        'Host a shared micro-batch day and count the three makers who join.',
+    },
+  ],
+  INVERT: [
+    {
+      title: 'assumption stress-test',
+      goal: 'test the opposite outcome',
+      facet: 'counterexample',
+      motivation: 'challenge certainty',
+      method: 'contrary-case tasting',
+      firstTest:
+        'Ask six skeptics to test whether the stated assumption fails.',
+    },
+    {
+      title: 'no-preorder walk-up',
+      goal: 'explore spontaneous demand',
+      facet: 'walk-up sales',
+      motivation: 'low-friction access',
+      method: 'unannounced sample stand',
+      firstTest:
+        'Set up an unannounced sample stand and count walk-up purchases.',
+    },
+    {
+      title: 'independent pickup point',
+      goal: 'test self-directed collection',
+      facet: 'self-service',
+      motivation: 'customer autonomy',
+      method: 'honor-box pickup shelf',
+      firstTest:
+        'Place an honor-box shelf outside and record six collection choices.',
+    },
+    {
+      title: 'single-flavor challenge',
+      goal: 'check whether variety matters',
+      facet: 'simplicity',
+      motivation: 'fewer choices',
+      method: 'one-flavor bake sale',
+      firstTest:
+        'Sell one flavor for an hour and compare requests with leftovers.',
+    },
+    {
+      title: 'customer-led schedule',
+      goal: 'see if fixed hours are needed',
+      facet: 'flexible timing',
+      motivation: 'customer control',
+      method: 'customer-chosen pickup poll',
+      firstTest:
+        'Poll eight customers and schedule pickup at their least expected time.',
+    },
+    {
+      title: 'outside-bakery trial',
+      goal: 'learn whether a bakery is essential',
+      facet: 'alternative venue',
+      motivation: 'test assumptions',
+      method: 'borrowed-kitchen pop-up',
+      firstTest:
+        'Run a borrowed-kitchen pop-up and ask ten visitors what mattered.',
+    },
+  ],
+  TRANSPLANT: [
+    {
+      title: 'library preorder shelf',
+      goal: 'make collection convenient',
+      facet: 'library access',
+      motivation: 'easy pickup',
+      method: 'book-style reserved pickup shelf',
+      firstTest:
+        'Test a reserved pickup shelf with six library visitors and count collections.',
+      context: 'rural libraries',
+    },
+    {
+      title: 'school-club batch kit',
+      goal: 'support group learning',
+      facet: 'school clubs',
+      motivation: 'hands-on learning',
+      method: 'club-sized baking kit',
+      firstTest: 'Give one club a baking kit and record how many complete it.',
+      context: 'school clubs',
+    },
+    {
+      title: 'clinic waiting-room menu',
+      goal: 'offer a useful pause',
+      facet: 'clinic access',
+      motivation: 'comfort',
+      method: 'appointment-timed snack delivery',
+      firstTest:
+        'Offer appointment-timed snacks in one clinic waiting room and count orders.',
+      context: 'clinic waiting rooms',
+    },
+    {
+      title: 'transit-hub collection',
+      goal: 'fit orders into commutes',
+      facet: 'commuter access',
+      motivation: 'time saved',
+      method: 'commuter pickup locker',
+      firstTest:
+        'Place six prepaid samples in a commuter locker and count collections.',
+      context: 'transit hubs',
+    },
+    {
+      title: 'farm-stand reservation',
+      goal: 'coordinate local supply',
+      facet: 'farm stands',
+      motivation: 'less waste',
+      method: 'reserved weekly produce bundle',
+      firstTest:
+        'Coordinate six reserved bundles through a farm stand and track collections.',
+      context: 'weekend farm stands',
+    },
+    {
+      title: 'apartment-lobby exchange',
+      goal: 'build neighbor connection',
+      facet: 'shared buildings',
+      motivation: 'community',
+      method: 'lobby-based shared order board',
+      firstTest:
+        'Try a shared order board in an apartment lobby and count orders for seven days.',
+      context: 'apartment lobbies',
+    },
+  ],
+}
+
+function fixtureSummary(
+  operator: UnaryOperator,
+  fixture: ExpansionFixture,
+  values: {
+    beneficiary: string
+    intent: string
+    sourceMechanism: string
+    assumption: string
+    context: string
+  },
+) {
+  if (operator === 'GROUND')
+    return `Test ${fixture.goal} for ${values.beneficiary} with a small ${fixture.method} trial of ${values.intent}.`
+  if (operator === 'REFRAME')
+    return `Serve ${values.beneficiary} through ${fixture.method}, measuring ${fixture.goal} while keeping ${values.intent}.`
+  if (operator === 'LEAP')
+    return `Preserve ${values.intent} by using ${fixture.method} to ${fixture.goal} for ${values.beneficiary}.`
+  if (operator === 'INVERT')
+    return `If “${values.assumption}” proves false, ${fixture.method} can ${fixture.goal} for ${values.beneficiary}.`
+  return `Adapt ${values.sourceMechanism} into ${fixture.method} in ${values.context} to ${fixture.goal} for ${values.beneficiary}.`
+}
+
+function expansionTitle(subject: string, suffix: string) {
+  const fullSuffix = `: ${suffix}`
+  const subjectLimit = 120 - fullSuffix.length
+  if (subject.length <= subjectLimit) return `${subject}${fullSuffix}`
+
+  const truncated = subject.slice(0, subjectLimit - 1)
+  const wordBoundary = truncated.lastIndexOf(' ')
+  const prefix = (
+    wordBoundary > 0 ? truncated.slice(0, wordBoundary) : truncated
+  ).trimEnd()
+  return `${prefix}…${fullSuffix}`
 }
 
 const hyphenatedNoModifiers = new Set([
@@ -111,6 +450,9 @@ class MockProvider implements ModelProvider {
       if (request.task === 'evaluate' && this.shouldBeInvalid(attempt)) {
         return { evaluations: 'invalid' }
       }
+      if (request.task === 'expand' && this.shouldBeInvalid(attempt)) {
+        return { operator: 'GROUND', candidates: [] }
+      }
     }
 
     switch (request.task) {
@@ -120,6 +462,8 @@ class MockProvider implements ModelProvider {
         return this.frame(request.input)
       case 'evaluate':
         return this.evaluate(request.input)
+      case 'expand':
+        return this.expand(request.input)
     }
   }
 
@@ -230,10 +574,107 @@ class MockProvider implements ModelProvider {
         hypothesis: selected[1]!.hypothesis,
       }
     }
+    if (this.scenario === 'operator-gaps' && selected[0]) {
+      selected[0]!.changedAssumptions = ['TBD']
+      selected[0]!.hypothesis.assumptions = ['TBD']
+      selected[0]!.mechanism = 'unclear'
+    }
     if (this.scenario === 'low-quality' && selected[0]) {
       selected[0].firstTest = 'Conduct some more research.'
     }
     return { candidates: selected }
+  }
+
+  private expand(input: unknown) {
+    const { operator, parent, assumption, mechanism } = input as {
+      operator: UnaryOperator
+      parent: IdeaContent
+      assumption?: string
+      mechanism?: string
+    }
+    const subject =
+      parent.title.trim().split(': ', 1)[0]?.trim() || 'this direction'
+    const sourceMechanism = (mechanism || parent.mechanism).trim()
+    const beneficiary = parent.hypothesis.axes.beneficiary
+    const preservedIntent = parent.preservedIntent
+    const trustedAssumption =
+      assumption ?? parent.changedAssumptions[0] ?? 'the original assumption'
+    const templates = expansionFixtures[operator]
+    const candidates: IdeaContent[] = templates.map((template, index) => {
+      const nextMechanism =
+        operator === 'GROUND'
+          ? `${template.method}, a small pilot using ${sourceMechanism}`
+          : operator === 'TRANSPLANT'
+            ? `${sourceMechanism} adapted as ${template.method}`
+            : template.method
+      const nextBeneficiary = template.beneficiary ?? beneficiary
+      const context = template.context ?? 'the neighborhood'
+      const summary = fixtureSummary(operator, template, {
+        beneficiary: nextBeneficiary,
+        intent: preservedIntent,
+        sourceMechanism,
+        assumption: trustedAssumption,
+        context,
+      }).slice(0, 600)
+      const next: IdeaContent = {
+        ...parent,
+        key: `expand-${operator.toLowerCase()}-${index + 1}`,
+        title: expansionTitle(subject, template.title),
+        summary,
+        hypothesis: {
+          ...parent.hypothesis,
+          statement: summary,
+          axes: {
+            ...parent.hypothesis.axes,
+            goal: template.goal,
+            beneficiary: nextBeneficiary,
+            motivation: template.motivation,
+            mechanism: nextMechanism,
+            timeHorizon:
+              operator === 'GROUND'
+                ? 'immediate'
+                : index % 2
+                  ? 'months'
+                  : 'years',
+            risk: index % 2 ? 'medium' : 'low',
+          },
+          assumptions: [trustedAssumption],
+          supportingFactRefs: parent.hypothesis.supportingFactRefs,
+          counterevidence: [],
+          falsifiers: [
+            `The ${template.goal} trial fails for ${nextBeneficiary}.`,
+          ],
+        },
+        changedAssumptions: [trustedAssumption],
+        fitRationale: `This tests ${preservedIntent} through ${nextMechanism} for ${nextBeneficiary}.`,
+        strongestObjection: `${nextBeneficiary} may not value ${template.goal}.`,
+        firstTest: template.firstTest,
+        mechanism: nextMechanism,
+        facets: [template.goal, template.facet],
+        distance:
+          operator === 'GROUND'
+            ? 'near'
+            : operator === 'REFRAME'
+              ? index % 2
+                ? 'adjacent'
+                : 'near'
+              : operator === 'LEAP'
+                ? 'leap'
+                : parent.distance,
+      }
+      if (operator === 'INVERT') next.invertedAssumption = trustedAssumption
+      if (operator === 'TRANSPLANT') next.targetContext = context
+      return next
+    })
+    return {
+      operator:
+        this.scenario === 'operator-mismatch'
+          ? operator === 'GROUND'
+            ? 'LEAP'
+            : 'GROUND'
+          : operator,
+      candidates,
+    }
   }
 
   private evaluate(input: unknown): EvaluateOutput {
@@ -793,7 +1234,7 @@ function stableHash(value: string) {
   return hash >>> 0
 }
 
-function embedText(value: string) {
+export function embedText(value: string) {
   const stopWords = new Set([
     'a',
     'about',

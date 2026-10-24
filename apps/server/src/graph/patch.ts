@@ -24,7 +24,12 @@ export const GraphPatchSchema = z
   .object({
     projectId: z.string().uuid(),
     runId: z.string().uuid(),
-    ops: z.array(AddIdeaOperationSchema).min(1).max(4),
+    origin: z.enum(['INITIAL_FRAME', 'OPERATOR_EXPANSION']).optional(),
+    operator: z
+      .enum(['GROUND', 'REFRAME', 'LEAP', 'INVERT', 'TRANSPLANT'])
+      .nullable()
+      .optional(),
+    ops: z.array(AddIdeaOperationSchema).max(4),
   })
   .strict()
 
@@ -56,24 +61,6 @@ export async function applyGraphPatch(
       .for('update')
     if (!project) throw new GraphPatchError('Project does not exist')
 
-    const [succeededInitialRun] = await tx
-      .select({ id: generationRuns.id })
-      .from(generationRuns)
-      .where(
-        and(
-          eq(generationRuns.projectId, patch.projectId),
-          eq(generationRuns.kind, 'INITIAL'),
-          eq(generationRuns.status, 'SUCCEEDED'),
-        ),
-      )
-      .limit(1)
-    if (succeededInitialRun) {
-      throw new GraphPatchError(
-        'An initial generation has already succeeded',
-        'INITIAL_ALREADY_GENERATED',
-      )
-    }
-
     const [run] = await tx
       .select()
       .from(generationRuns)
@@ -81,6 +68,39 @@ export async function applyGraphPatch(
       .limit(1)
     if (!run || run.projectId !== patch.projectId || run.status !== 'RUNNING')
       throw new GraphPatchError('Run must be running in the target project')
+    const expansion = run.kind === 'EXPANSION'
+    if (expansion) {
+      if (
+        patch.origin !== 'OPERATOR_EXPANSION' ||
+        patch.operator !== run.operator ||
+        !run.parentNodeId ||
+        patch.ops.length > 3
+      )
+        throw new GraphPatchError('Expansion patch does not match its run')
+    } else {
+      if (
+        (patch.origin && patch.origin !== 'INITIAL_FRAME') ||
+        (patch.operator ?? null) !== null ||
+        patch.ops.length < 1
+      )
+        throw new GraphPatchError('Initial patch does not match its run')
+      const [succeededInitialRun] = await tx
+        .select({ id: generationRuns.id })
+        .from(generationRuns)
+        .where(
+          and(
+            eq(generationRuns.projectId, patch.projectId),
+            eq(generationRuns.kind, 'INITIAL'),
+            eq(generationRuns.status, 'SUCCEEDED'),
+          ),
+        )
+        .limit(1)
+      if (succeededInitialRun)
+        throw new GraphPatchError(
+          'An initial generation has already succeeded',
+          'INITIAL_ALREADY_GENERATED',
+        )
+    }
 
     const candidateIds = patch.ops.map((operation) => operation.candidateId)
     if (new Set(candidateIds).size !== candidateIds.length)
@@ -111,25 +131,71 @@ export async function applyGraphPatch(
         candidate.content.summary.length > 600
       )
         throw new GraphPatchError('Candidate content exceeds node limits')
+      if (expansion && candidate.operator !== run.operator)
+        throw new GraphPatchError('Candidate operator does not match the run')
     }
 
-    const parentIds = patch.ops.flatMap((operation) => operation.parentNodeIds)
+    const parentIds = [
+      ...new Set([
+        ...patch.ops.flatMap((operation) => operation.parentNodeIds),
+        ...(expansion && run.parentNodeId ? [run.parentNodeId] : []),
+      ]),
+    ]
     const parentRows = await tx
-      .select({ id: nodes.id, projectId: nodes.projectId })
+      .select()
       .from(nodes)
       .where(inArray(nodes.id, parentIds))
+      .for('update')
     const parentById = new Map(parentRows.map((node) => [node.id, node]))
+    if (expansion) {
+      const parent = parentById.get(run.parentNodeId!)
+      if (
+        !parent ||
+        parent.projectId !== patch.projectId ||
+        parent.type !== 'IDEA' ||
+        parent.status === 'REJECTED' ||
+        parent.status === 'ARCHIVED'
+      )
+        throw new GraphPatchError('Expansion parent is not eligible')
+    }
     for (const operation of patch.ops) {
       if (operation.parentNodeIds.length !== 1)
-        throw new GraphPatchError(
-          'INITIAL_FRAME ideas require exactly one parent',
+        throw new GraphPatchError('Idea expansions require exactly one parent')
+      if (expansion && operation.parentNodeIds[0] !== run.parentNodeId)
+        throw new GraphPatchError('Expansion parent does not match the run')
+      if (expansion) {
+        const existingChildren = await tx
+          .select({ title: nodes.title, summary: nodes.summary })
+          .from(edges)
+          .innerJoin(nodes, eq(nodes.id, edges.childId))
+          .where(eq(edges.parentId, run.parentNodeId!))
+        const candidate = candidateById.get(operation.candidateId)!
+        if (
+          existingChildren.some(
+            (child) =>
+              normalizeContent(child.title) ===
+                normalizeContent(candidate.content.title) &&
+              normalizeContent(child.summary) ===
+                normalizeContent(candidate.content.summary),
+          )
         )
+          throw new GraphPatchError('Expansion duplicates an existing child')
+      }
       for (const parentId of operation.parentNodeIds) {
         const parent = parentById.get(parentId)
         if (!parent || parent.projectId !== patch.projectId)
           throw new GraphPatchError(
             'Parent node must exist in the target project',
           )
+        if (
+          expansion &&
+          (parent.type !== 'IDEA' ||
+            parent.status === 'REJECTED' ||
+            parent.status === 'ARCHIVED')
+        )
+          throw new GraphPatchError('Expansion parent is not eligible')
+        if (operation.displayPosition > (expansion ? 3 : 4))
+          throw new GraphPatchError('Display position exceeds the run limit')
       }
     }
 
@@ -178,8 +244,8 @@ export async function applyGraphPatch(
         id: nodeId,
         projectId: patch.projectId,
         type: 'IDEA',
-        origin: 'INITIAL_FRAME',
-        operator: null,
+        origin: expansion ? 'OPERATOR_EXPANSION' : 'INITIAL_FRAME',
+        operator: expansion ? run.operator : null,
         runId: patch.runId,
         candidateId: candidate.id,
         title: candidate.content.title,
@@ -221,15 +287,28 @@ export async function applyGraphPatch(
       .set({ status: 'SUCCEEDED', finishedAt: new Date() })
       .where(eq(generationRuns.id, patch.runId))
     const timestamp = new Date()
+    if (expansion) {
+      await tx
+        .update(projects)
+        .set({ updatedAt: timestamp })
+        .where(eq(projects.id, patch.projectId))
+    }
     await tx.insert(events).values({
       id: randomUUID(),
       projectId: patch.projectId,
       runId: patch.runId,
-      nodeId: null,
-      type: 'INITIAL_GENERATED',
+      nodeId: expansion ? run.parentNodeId : null,
+      type: expansion ? 'NODE_EXPANDED' : 'INITIAL_GENERATED',
       payload: {
         nodeIds: [...nodeIdsByCandidate.values()],
         candidateIds: patch.ops.map((operation) => operation.candidateId),
+        ...(expansion
+          ? {
+              operator: run.operator,
+              parentNodeId: run.parentNodeId,
+              displayedCount: nodeIdsByCandidate.size,
+            }
+          : {}),
       },
       dedupeKey: null,
       createdAt: timestamp,
@@ -268,4 +347,8 @@ function assertAcyclic(
     if (!visit(nodeId))
       throw new GraphPatchError('Graph patch would create a cycle')
   }
+}
+
+function normalizeContent(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }

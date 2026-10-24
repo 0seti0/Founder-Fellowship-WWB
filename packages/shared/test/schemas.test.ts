@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   DbHealthSchema,
   ExtractionOutputSchema,
+  ExpandOutputSchema,
+  EditableIdeaFieldsSchema,
   FrameOutputSchema,
   HealthStatusSchema,
   ModelModeSchema,
+  UnaryOperatorSchema,
 } from '../src/index'
 
 describe('shared schemas', () => {
@@ -33,6 +36,65 @@ describe('shared schemas', () => {
   it('accepts only supported model modes', () => {
     expect(ModelModeSchema.parse('live')).toBe('live')
     expect(ModelModeSchema.safeParse('other').success).toBe(false)
+  })
+
+  it('keeps expansion output strict and unary', () => {
+    expect(UnaryOperatorSchema.parse('GROUND')).toBe('GROUND')
+    expect(UnaryOperatorSchema.safeParse('COMBINE').success).toBe(false)
+    expect(
+      ExpandOutputSchema.safeParse({
+        operator: 'GROUND',
+        candidates: [],
+      }).success,
+    ).toBe(false)
+    expect(
+      ExpandOutputSchema.safeParse({
+        operator: 'GROUND',
+        candidates: Array.from({ length: 4 }, (_, index) => ({
+          key: `candidate-${index}`,
+          title: 'Direction',
+          summary: 'A direction.',
+          hypothesis: {
+            statement: 'A hypothesis.',
+            axes: {
+              goal: 'learn',
+              beneficiary: 'neighbors',
+              motivation: 'convenience',
+              mechanism: 'test',
+              timeHorizon: 'months',
+              risk: 'low',
+            },
+            assumptions: ['The idea is useful.'],
+            supportingFactRefs: [],
+            counterevidence: [],
+            falsifiers: ['No one responds.'],
+          },
+          preservedIntent: 'Explore the idea.',
+          changedAssumptions: ['Test one small part.'],
+          fitRationale: 'It is testable.',
+          strongestObjection: 'The result may not generalize.',
+          firstTest: 'Ask five neighbors this week and record replies.',
+          mechanism: 'A small test.',
+          facets: ['learning'],
+          distance: 'near',
+          id: 'model-chosen-id',
+        })),
+      }).success,
+    ).toBe(false)
+  })
+
+  it('requires nonempty, trimmed editable fields', () => {
+    expect(EditableIdeaFieldsSchema.parse({ title: '  New title  ' })).toEqual({
+      title: 'New title',
+    })
+    expect(EditableIdeaFieldsSchema.safeParse({}).success).toBe(false)
+    expect(EditableIdeaFieldsSchema.safeParse({ summary: '   ' }).success).toBe(
+      false,
+    )
+    expect(
+      EditableIdeaFieldsSchema.safeParse({ title: 'Valid', operator: 'LEAP' })
+        .success,
+    ).toBe(false)
   })
 
   it('requires a non-negative integer migration count', () => {

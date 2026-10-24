@@ -1,8 +1,9 @@
 import type {
   CandidateEvaluation,
-  FrameCandidate,
+  IdeaContent,
   Hypothesis,
   MockScenario,
+  UnaryOperator,
 } from '@unfold/shared'
 import {
   bigint,
@@ -32,6 +33,7 @@ export const projects = mysqlTable('projects', {
   id: varchar('id', { length: 36 }).primaryKey(),
   title: varchar('title', { length: 191 }).notNull(),
   originalPrompt: text('original_prompt').notNull(),
+  activeNodeId: varchar('active_node_id', { length: 36 }),
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { mode: 'date' })
     .defaultNow()
@@ -46,7 +48,7 @@ export const generationRuns = mysqlTable(
     projectId: varchar('project_id', { length: 36 })
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    kind: mysqlEnum('kind', ['INITIAL']).notNull(),
+    kind: mysqlEnum('kind', ['INITIAL', 'EXPANSION']).notNull(),
     status: mysqlEnum('status', [
       'PENDING',
       'RUNNING',
@@ -56,8 +58,17 @@ export const generationRuns = mysqlTable(
     modelProvider: varchar('model_provider', { length: 191 }).notNull(),
     modelName: varchar('model_name', { length: 191 }).notNull(),
     promptVersions: json('prompt_versions')
-      .$type<{ extract: string; frame: string; evaluate: string }>()
+      .$type<Record<string, string>>()
       .notNull(),
+    operator: varchar('operator', { length: 64 }).$type<UnaryOperator>(),
+    parentNodeId: varchar('parent_node_id', { length: 36 }),
+    operatorRegistryVersion: varchar('operator_registry_version', {
+      length: 64,
+    }),
+    planningFeatures: json('planning_features').$type<Record<
+      string,
+      unknown
+    > | null>(),
     schemaVersion: varchar('schema_version', { length: 64 }).notNull(),
     selectionPolicyVersion: varchar('selection_policy_version', {
       length: 64,
@@ -84,8 +95,12 @@ export const nodes = mysqlTable(
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
     type: mysqlEnum('type', ['ROOT_PROMPT', 'IDEA']).notNull(),
-    origin: mysqlEnum('origin', ['PROMPT', 'INITIAL_FRAME']).notNull(),
-    operator: varchar('operator', { length: 64 }),
+    origin: mysqlEnum('origin', [
+      'PROMPT',
+      'INITIAL_FRAME',
+      'OPERATOR_EXPANSION',
+    ]).notNull(),
+    operator: varchar('operator', { length: 64 }).$type<UnaryOperator>(),
     runId: varchar('run_id', { length: 36 }).references(
       () => generationRuns.id,
       { onDelete: 'cascade' },
@@ -95,7 +110,15 @@ export const nodes = mysqlTable(
     summary: varchar('summary', { length: 600 }).notNull(),
     content: json('content').$type<Record<string, unknown>>().notNull(),
     displayPosition: int('display_position'),
+    status: mysqlEnum('status', ['VISIBLE', 'PINNED', 'REJECTED', 'ARCHIVED'])
+      .notNull()
+      .default('VISIBLE'),
+    userEdited: boolean('user_edited').notNull().default(false),
     createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { mode: 'date' })
+      .defaultNow()
+      .onUpdateNow()
+      .notNull(),
   },
   (table) => [index('nodes_project_id_idx').on(table.projectId)],
 )
@@ -177,7 +200,16 @@ export const candidates = mysqlTable(
       .references(() => generationRuns.id, { onDelete: 'cascade' }),
     ordinal: int('ordinal').notNull(),
     modelKey: varchar('model_key', { length: 191 }).notNull(),
-    content: json('content').$type<FrameCandidate>().notNull(),
+    content: json('content').$type<IdeaContent>().notNull(),
+    operator: varchar('operator', { length: 64 }).$type<UnaryOperator>(),
+    operatorRegistryVersion: varchar('operator_registry_version', {
+      length: 64,
+    }),
+    suitabilityScore: double('suitability_score'),
+    planningMetadata: json('planning_metadata').$type<Record<
+      string,
+      unknown
+    > | null>(),
     constraintEvaluations: json('constraint_evaluations')
       .$type<CandidateEvaluation['constraints']>()
       .notNull(),
@@ -272,6 +304,13 @@ export const events = mysqlTable(
       'GENERATION_FAILED',
       'SLATE_DISPLAYED',
       'NODE_OPENED',
+      'NODE_EXPANDED',
+      'NODE_PINNED',
+      'NODE_UNPINNED',
+      'NODE_REJECTED',
+      'NODE_ARCHIVED',
+      'NODE_EDITED',
+      'ACTIVE_NODE_CHANGED',
     ]).notNull(),
     payload: json('payload').$type<Record<string, unknown>>().notNull(),
     dedupeKey: varchar('dedupe_key', { length: 191 }).unique(),
