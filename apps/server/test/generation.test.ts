@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import type { FrameCandidate, MockScenario } from '@unfold/shared'
-import { createModelProvider, type ModelProvider } from '../src/model/provider'
+import type {
+  ExtractedConstraint,
+  FrameCandidate,
+  MockScenario,
+} from '@unfold/shared'
+import {
+  createModelProvider,
+  evaluateHardConstraint,
+  type ModelProvider,
+} from '../src/model/provider'
 import {
   generatePipeline,
   PipelineError,
@@ -36,6 +44,47 @@ const candidateText = (candidate: ScoredCandidate) =>
     candidate.content.mechanism,
     candidate.content.firstTest,
   ].join(' ')
+
+function makeConstraintCandidate(firstTest: string): FrameCandidate {
+  return {
+    key: 'constraint-test',
+    title: 'Neighborhood bakery direction',
+    summary: 'A small bakery trial for nearby residents.',
+    hypothesis: {
+      statement: 'A focused bakery trial could test local interest.',
+      axes: {
+        goal: 'test demand',
+        beneficiary: 'neighbors',
+        motivation: 'convenience',
+        mechanism: 'sample batch',
+        timeHorizon: 'months',
+        risk: 'low',
+      },
+      assumptions: ['Nearby residents are interested.'],
+      supportingFactRefs: [],
+      counterevidence: [],
+      falsifiers: ['The trial does not attract interest.'],
+    },
+    preservedIntent: 'Explore a neighborhood bakery.',
+    changedAssumptions: ['Start with one local trial.'],
+    fitRationale: 'A small trial provides useful evidence.',
+    strongestObjection: 'The trial may not represent demand.',
+    firstTest,
+    mechanism: 'Bake a sample tray and record the result.',
+    facets: ['local trial'],
+    distance: 'near',
+  }
+}
+
+function makeHardConstraint(evidence: string): ExtractedConstraint {
+  return {
+    ref: 'c1',
+    text: evidence,
+    evidence,
+    strength: 'hard',
+    basis: 'explicit',
+  }
+}
 
 const selectionFacets = [
   'audience',
@@ -323,6 +372,102 @@ describe('initial generation pipeline', () => {
       ),
     ).toBe(false)
     expectContactProhibition(result)
+  })
+
+  it('checks every hyphenated ban in a constraint', () => {
+    const constraint = makeHardConstraint('no-interviews and no-selling')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Interview five neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('checks hyphenated bans alongside ordinary negations', () => {
+    const constraint = makeHardConstraint(
+      'I want a no-contact bakery and must not spend money.',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Interview five neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('ignores negated mentions of a hyphenated ban in candidate text', async () => {
+    const constraint = makeHardConstraint(
+      'I want a no-commitment neighborhood bakery trial',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Run a no-commitment test by Friday.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sign a commitment with a supplier.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Do not contact anyone.'),
+        makeHardConstraint('no-contact'),
+      ),
+    ).toBe('unknown')
+
+    const result = await generateForPrompt(
+      'I want a no-commitment neighborhood bakery trial.',
+    )
+    const riskCandidate = result.candidates.find((candidate) =>
+      /no-commitment test/i.test(candidate.content.firstTest),
+    )
+
+    expect(
+      result.constraints.some(
+        ({ item }) =>
+          'strength' in item &&
+          item.strength === 'hard' &&
+          /no-commitment/i.test(item.evidence),
+      ),
+    ).toBe(true)
+    if (riskCandidate) {
+      expect(
+        riskCandidate.rejectionReasons.filter((reason) =>
+          reason.startsWith('HARD_CONSTRAINT_VIOLATED:'),
+        ),
+      ).toEqual([])
+    }
   })
 
   it('does not treat the no-code modifier as a hard constraint', async () => {

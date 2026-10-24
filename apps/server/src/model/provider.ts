@@ -37,12 +37,13 @@ const hyphenatedNoModifiers = new Set([
   'show',
 ])
 
-function findHyphenatedBan(text: string): string | null {
+function findHyphenatedBans(text: string): string[] {
+  const bans = new Set<string>()
   for (const match of text.matchAll(/\bno[-‐‑](\p{L}+)/giu)) {
     const word = match[1]!.toLowerCase()
-    if (!hyphenatedNoModifiers.has(word)) return word
+    if (!hyphenatedNoModifiers.has(word)) bans.add(word)
   }
-  return null
+  return [...bans]
 }
 
 export class ProviderError extends Error {
@@ -145,7 +146,10 @@ class MockProvider implements ModelProvider {
     for (const rawClause of prompt.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
       const clause = rawClause[0].trim()
       if (!clause) continue
-      if (explicitMarker.test(clause) || findHyphenatedBan(clause) !== null) {
+      if (
+        explicitMarker.test(clause) ||
+        findHyphenatedBans(clause).length > 0
+      ) {
         constraints.push({
           ref: `c${constraints.length + 1}`,
           text: clause,
@@ -357,26 +361,32 @@ const constraintSynonyms: Record<string, string[]> = {
   spend: ['spend', 'buy', 'pay', 'cost', 'budget', 'purchase'],
 }
 
-function evaluateHardConstraint(
+export function evaluateHardConstraint(
   candidate: FrameCandidate,
   constraint: ExtractedConstraint,
 ): 'violated' | 'unknown' {
-  const negation = constraint.evidence.match(
-    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐‑])|without|never)\b\s+(.+)/i,
-  )
-  const hyphenatedBan = negation?.[1]
-    ? null
-    : findHyphenatedBan(constraint.evidence)
-  const terms = negation?.[1]
-    ? (negation[1].toLowerCase().match(/[a-z]+/g) ?? [])
-        .filter((word) => !constraintStopWords.has(word))
-        .slice(0, 3)
-    : hyphenatedBan
-      ? [hyphenatedBan]
-      : []
-  if (!terms.length) return 'unknown'
+  const terms = new Set(findHyphenatedBans(constraint.evidence))
+  const ordinaryNegation =
+    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐‑])|without|never)\b\s+(.+?)(?=\s+(?:and|or|but)\b|[,;]|$)/gi
 
-  return candidateMatchesConstraintTerms(candidate, terms)
+  for (const match of constraint.evidence.matchAll(ordinaryNegation)) {
+    const capture = match[1]!
+    const hyphenatedWords = new Set(
+      [...capture.matchAll(/\bno[-‐‑](\p{L}+)/giu)].flatMap(
+        (ban) => ban[0].toLowerCase().match(/[a-z]+/g) ?? [],
+      ),
+    )
+    const ordinaryTerms = (capture.toLowerCase().match(/[a-z]+/g) ?? [])
+      .filter(
+        (word) => !constraintStopWords.has(word) && !hyphenatedWords.has(word),
+      )
+      .slice(0, 3)
+    for (const term of ordinaryTerms) terms.add(term)
+  }
+
+  if (terms.size === 0) return 'unknown'
+
+  return candidateMatchesConstraintTerms(candidate, [...terms])
 }
 
 function candidateMatchesConstraintTerms(
@@ -389,7 +399,9 @@ function candidateMatchesConstraintTerms(
     candidate.mechanism,
     candidate.firstTest,
   ].join(' ')
-  const candidateWords = stemWords(candidateText)
+  const candidateWords = stemWords(
+    candidateText.replace(/\b(?:no|not|without|never)[-‐‑\s]+\p{L}+/giu, ' '),
+  )
   for (const term of terms) {
     const normalizedTerm = stemWord(term)
     const expansions = constraintSynonyms[normalizedTerm] ?? [normalizedTerm]
