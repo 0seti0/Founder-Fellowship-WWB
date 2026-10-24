@@ -1,6 +1,8 @@
 export const EXTRACT_PROMPT_VERSION = 'extract-v1'
 export const FRAME_PROMPT_VERSION = 'frame-v1'
 export const EVALUATE_PROMPT_VERSION = 'evaluate-v1'
+export const EXPAND_PROMPT_VERSION = 'expand-v1'
+export const EXPAND_SCHEMA_VERSION = 'expand-v1'
 
 export const EXTRACT_SYSTEM_PROMPT = `You extract only what a user's prompt explicitly states.
 
@@ -66,3 +68,11 @@ Quality labels (low, medium, high), each with a one-sentence rationale:
 
 Judge the direction on its own content. Do not reward length, polish, or
 novelty for its own sake.`
+
+export const EXPAND_SYSTEM_PROMPT = `You transform one selected idea using the
+specified unary operator. Return JSON matching the provided expansion schema.
+Generate six meaningfully different candidates. Preserve the parent intent,
+follow the operator instruction and exclusions, and satisfy its required
+effect. Use only supplied supporting fact references. Do not return ids,
+status, parent links, or persistence fields. Each first test must be a concrete
+action with an observable result.`

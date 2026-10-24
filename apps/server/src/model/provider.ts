@@ -5,13 +5,15 @@ import type {
   ExtractedConstraint,
   ExtractedFact,
   ExtractionOutput,
+  IdeaContent,
   FrameCandidate,
   FrameOutput,
   MockScenario,
+  UnaryOperator,
 } from '@unfold/shared'
 import type { ModelMode } from '@unfold/shared'
 
-export type GenerationTask = 'extract' | 'frame' | 'evaluate'
+export type GenerationTask = 'extract' | 'frame' | 'evaluate' | 'expand'
 
 export type StructuredGenerationRequest = {
   task: GenerationTask
@@ -111,6 +113,9 @@ class MockProvider implements ModelProvider {
       if (request.task === 'evaluate' && this.shouldBeInvalid(attempt)) {
         return { evaluations: 'invalid' }
       }
+      if (request.task === 'expand' && this.shouldBeInvalid(attempt)) {
+        return { operator: 'GROUND', candidates: [] }
+      }
     }
 
     switch (request.task) {
@@ -120,6 +125,8 @@ class MockProvider implements ModelProvider {
         return this.frame(request.input)
       case 'evaluate':
         return this.evaluate(request.input)
+      case 'expand':
+        return this.expand(request.input)
     }
   }
 
@@ -230,10 +237,117 @@ class MockProvider implements ModelProvider {
         hypothesis: selected[1]!.hypothesis,
       }
     }
+    if (this.scenario === 'operator-gaps' && selected[0]) {
+      selected[0]!.changedAssumptions = ['TBD']
+      selected[0]!.hypothesis.assumptions = ['TBD']
+      selected[0]!.mechanism = 'unclear'
+    }
     if (this.scenario === 'low-quality' && selected[0]) {
       selected[0].firstTest = 'Conduct some more research.'
     }
     return { candidates: selected }
+  }
+
+  private expand(input: unknown) {
+    const { operator, parent, assumption } = input as {
+      operator: UnaryOperator
+      parent: IdeaContent
+      assumption?: string
+    }
+    const variants = [
+      [
+        'validate demand',
+        'local organizers',
+        'reduce uncertainty',
+        'guided interviews',
+      ],
+      [
+        'improve access',
+        'first-time visitors',
+        'remove friction',
+        'shared pickup',
+      ],
+      [
+        'build connection',
+        'small neighborhood groups',
+        'create belonging',
+        'recurring gatherings',
+      ],
+      [
+        'learn pricing',
+        'budget-conscious households',
+        'protect affordability',
+        'limited preorder',
+      ],
+      [
+        'increase reliability',
+        'busy caregivers',
+        'save time',
+        'scheduled delivery',
+      ],
+      [
+        'support independence',
+        'community volunteers',
+        'share practical skills',
+        'peer workshops',
+      ],
+    ] as const
+    const candidates: IdeaContent[] = variants.map(
+      ([goal, beneficiary, motivation, mechanism], index) => {
+        const next: IdeaContent = {
+          ...parent,
+          key: `expand-${operator.toLowerCase()}-${index + 1}`,
+          title: `${goal[0]!.toUpperCase()}${goal.slice(1)} through ${mechanism}`,
+          summary: `Use ${mechanism} to ${goal} for ${beneficiary}.`,
+          hypothesis: {
+            ...parent.hypothesis,
+            statement: `This direction may ${goal} for ${beneficiary}.`,
+            axes: {
+              ...parent.hypothesis.axes,
+              goal,
+              beneficiary,
+              motivation,
+              mechanism,
+              timeHorizon: index % 2 ? 'months' : 'years',
+              risk: index % 2 ? 'medium' : 'low',
+            },
+            assumptions: [`${beneficiary} will respond to this approach.`],
+            supportingFactRefs: parent.hypothesis.supportingFactRefs,
+            counterevidence: [],
+            falsifiers: [`No ${beneficiary} responds to the test.`],
+          },
+          changedAssumptions: [`${beneficiary} will try ${mechanism}.`],
+          fitRationale: `This tests whether ${mechanism} can ${goal} without a large commitment.`,
+          strongestObjection: `${beneficiary} may prefer an existing alternative.`,
+          firstTest: `Ask ${index + 5} ${beneficiary} to try ${mechanism} this week and record how many respond.`,
+          mechanism,
+          facets: [goal, mechanism],
+          distance:
+            operator === 'GROUND'
+              ? 'near'
+              : operator === 'REFRAME'
+                ? index % 2
+                  ? 'adjacent'
+                  : 'near'
+                : operator === 'LEAP'
+                  ? 'leap'
+                  : parent.distance,
+        }
+        if (operator === 'INVERT') next.invertedAssumption = assumption
+        if (operator === 'TRANSPLANT')
+          next.targetContext = `${['rural libraries', 'school clubs', 'clinic waiting rooms'][index % 3]}`
+        return next
+      },
+    )
+    return {
+      operator:
+        this.scenario === 'operator-mismatch'
+          ? operator === 'GROUND'
+            ? 'LEAP'
+            : 'GROUND'
+          : operator,
+      candidates,
+    }
   }
 
   private evaluate(input: unknown): EvaluateOutput {
