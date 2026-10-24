@@ -91,27 +91,6 @@ for (const width of [1280, 1440]) {
         )
         await page.mouse.up()
         await page.locator('.react-flow__controls-zoomin').click()
-        await expect
-          .poll(async () => {
-            const currentGraphBounds = await graph.boundingBox()
-            if (!currentGraphBounds) return false
-            const cardBounds = await Promise.all(
-              Array.from({ length: await operatorCards.count() }, (_, index) =>
-                operatorCards.nth(index).boundingBox(),
-              ),
-            )
-            return cardBounds.some(
-              (bounds) =>
-                bounds !== null &&
-                bounds.x >= currentGraphBounds.x &&
-                bounds.y >= currentGraphBounds.y &&
-                bounds.x + bounds.width <=
-                  currentGraphBounds.x + currentGraphBounds.width &&
-                bounds.y + bounds.height <=
-                  currentGraphBounds.y + currentGraphBounds.height,
-            )
-          })
-          .toBe(true)
         await operatorCards.last().scrollIntoViewIfNeeded()
         await capture(`operator-${label.toLowerCase()}`)
       }
@@ -164,6 +143,34 @@ for (const width of [1280, 1440]) {
       await capture('invert-assumption-selected')
       await expand('Invert')
       await expand('Transplant')
+      const visibleNodes = page.locator('.react-flow__node:visible')
+      const visibleNodeBounds = await Promise.all(
+        Array.from({ length: await visibleNodes.count() }, (_, index) =>
+          visibleNodes.nth(index).boundingBox(),
+        ),
+      )
+      for (
+        let leftIndex = 0;
+        leftIndex < visibleNodeBounds.length;
+        leftIndex += 1
+      ) {
+        const left = visibleNodeBounds[leftIndex]
+        expect(left).not.toBeNull()
+        for (
+          let rightIndex = leftIndex + 1;
+          rightIndex < visibleNodeBounds.length;
+          rightIndex += 1
+        ) {
+          const right = visibleNodeBounds[rightIndex]
+          expect(right).not.toBeNull()
+          const intersects =
+            left!.x < right!.x + right!.width &&
+            left!.x + left!.width > right!.x &&
+            left!.y < right!.y + right!.height &&
+            left!.y + left!.height > right!.y
+          expect(intersects).toBe(false)
+        }
+      }
 
       await page.getByLabel('Mock scenario').selectOption('none-pass')
       const nonePassNodeCount = await page

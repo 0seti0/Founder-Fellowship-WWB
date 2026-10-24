@@ -27,7 +27,7 @@ import {
   type RefObject,
 } from 'react'
 import '@xyflow/react/dist/style.css'
-import { layoutWithDagre } from './lib/layout'
+import { layoutWithPreservedPositions } from './lib/layout'
 import { trpcClient } from './lib/trpc'
 import { Stage2Controls } from './components/Stage2Controls'
 
@@ -158,34 +158,24 @@ export function App() {
         selected: node.id === selectedNodeId,
       }
     })
-    const layout = layoutWithDagre(rawNodes, graphEdges)
-    const laidOut = new Map(layout.map((node) => [node.id, node.position]))
-    const hadPositions = positions.size > 0
     const byId = new Map(visible.map((node) => [node.id, node]))
-    return layout.map((node) => {
-      let position = positions.get(node.id) ?? laidOut.get(node.id)!
-      if (!positions.has(node.id) && hadPositions) {
-        const edge = projectData.edges.find((item) => item.childId === node.id)
-        const parentPosition = edge ? positions.get(edge.parentId) : undefined
-        if (edge && parentPosition) {
-          const siblings = projectData.edges
-            .filter((item) => item.parentId === edge.parentId)
-            .sort((left, right) => {
-              const leftPosition = byId.get(left.childId)?.displayPosition ?? 0
-              const rightPosition =
-                byId.get(right.childId)?.displayPosition ?? 0
-              return leftPosition - rightPosition
-            })
-          const index = siblings.findIndex((item) => item.childId === node.id)
-          position = {
-            x: parentPosition.x + (index - (siblings.length - 1) / 2) * 280,
-            y: parentPosition.y + 190,
-          }
-        }
-      }
-      positions.set(node.id, position)
-      return { ...node, position }
-    })
+    const visibleOrder = new Map(visible.map((node, index) => [node.id, index]))
+    const layout = layoutWithPreservedPositions(
+      rawNodes,
+      graphEdges,
+      positions,
+      (left, right) => {
+        const leftNode = byId.get(left.id)!
+        const rightNode = byId.get(right.id)!
+        return (
+          leftNode.createdAt.localeCompare(rightNode.createdAt) ||
+          (leftNode.displayPosition ?? 0) - (rightNode.displayPosition ?? 0) ||
+          visibleOrder.get(left.id)! - visibleOrder.get(right.id)!
+        )
+      },
+    )
+    layout.forEach((node) => positions.set(node.id, node.position))
+    return layout
   }, [projectData, revealArchived, selectedNodeId])
 
   const graphEdges = useMemo<Edge[]>(() => {
