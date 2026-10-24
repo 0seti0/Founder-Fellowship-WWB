@@ -5,6 +5,7 @@ import {
   type MockScenario,
 } from '@unfold/shared'
 import { useEffect, useMemo, useState } from 'react'
+import { refreshAndClearPending } from '../lib/refreshAndClearPending'
 import { trpcClient } from '../lib/trpc'
 
 type EditableValues = {
@@ -104,8 +105,10 @@ export function Stage2Controls({
     } catch (caught) {
       setError(message(caught))
     } finally {
-      await refreshMutationQueries(queryClient, projectId, onChanged)
-      setPending(false)
+      await refreshAndClearPending(
+        () => refreshMutationQueries(queryClient, projectId, onChanged),
+        setPending,
+      )
     }
   }
 
@@ -137,8 +140,10 @@ export function Stage2Controls({
       setExpansionState('failure')
       setError(message(caught))
     } finally {
-      await refreshMutationQueries(queryClient, projectId, onChanged)
-      setPending(false)
+      await refreshAndClearPending(
+        () => refreshMutationQueries(queryClient, projectId, onChanged),
+        setPending,
+      )
     }
   }
 
@@ -174,8 +179,10 @@ export function Stage2Controls({
     } catch (caught) {
       setError(message(caught))
     } finally {
-      await refreshMutationQueries(queryClient, projectId, onChanged)
-      setPending(false)
+      await refreshAndClearPending(
+        () => refreshMutationQueries(queryClient, projectId, onChanged),
+        setPending,
+      )
     }
   }
 
