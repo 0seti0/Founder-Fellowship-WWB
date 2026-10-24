@@ -25,9 +25,15 @@
   border-color: #8a744d;
 }
 
-.status-rejected,
+.status-rejected {
+  border-color: #815f57;
+  background: #f1e7e3;
+  color: #603e38;
+}
+
 .status-archived {
-  opacity: 0.72;
+  background: #e7e5df;
+  color: #5e5a52;
 }
 
 .graph-card.is-active {
@@ -61,6 +67,9 @@
 
 .steering-actions {
   gap: 0.5rem;
+  border: 1px solid #e5e1d7;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
 }
 
 .steering-actions button,
@@ -87,6 +96,22 @@
   display: grid;
   gap: 0.35rem;
   padding: 0.65rem;
+}
+
+.operator-options {
+  border: 1px solid #e5e1d7;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+}
+
+.expansion-notice {
+  margin: 0;
+  border: 1px solid #cdddcf;
+  border-radius: 0.65rem;
+  background: #edf6ee;
+  padding: 0.7rem 0.8rem;
+  color: #386746;
+  font-size: 0.84rem;
 }
 
 .operator-option p,
@@ -508,6 +533,16 @@ select:focus-visible {
   border-radius: 13px;
   background: #fffefa;
   box-shadow: 0 5px 18px rgb(55 49 38 / 8%);
+}
+
+.graph-card.status-rejected {
+  border: 2px dashed #815f57;
+  background: #f1e7e3;
+}
+
+.graph-card.status-rejected .graph-card-title,
+.graph-card.status-rejected .graph-card-subtitle {
+  opacity: 0.68;
 }
 
 .react-flow__node.selected .graph-card {

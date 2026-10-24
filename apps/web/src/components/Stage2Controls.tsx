@@ -279,10 +279,12 @@ export function Stage2Controls({
               <p role="status">Generating directions…</p>
             )}
             {expansionState === 'success' && (
-              <p role="status">New directions added.</p>
+              <p className="expansion-notice" role="status">
+                New directions added.
+              </p>
             )}
             {expansionState === 'empty' && (
-              <p role="status">
+              <p className="expansion-notice" role="status">
                 No candidates met the quality bar; nothing was added.
               </p>
             )}

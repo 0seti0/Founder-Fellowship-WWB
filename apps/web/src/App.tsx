@@ -629,10 +629,16 @@ function GraphCard({ data }: NodeProps<Node<GraphNodeData>>) {
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <button type="button" aria-label={`Open ${data.title}`}>
         <span className="graph-card-badges">
-          <span className={`status-badge status-${data.status.toLowerCase()}`}>
-            Status: {data.status.toLowerCase()}
-          </span>
           {data.active && <span className="state-badge">Active</span>}
+          {data.status === 'PINNED' && (
+            <span className="state-badge">Pinned</span>
+          )}
+          {data.status === 'REJECTED' && (
+            <span className="state-badge status-rejected">Rejected</span>
+          )}
+          {data.status === 'ARCHIVED' && (
+            <span className="state-badge status-archived">Archived</span>
+          )}
           {data.edited && <span className="state-badge">Edited</span>}
         </span>
         <span className="graph-card-title">{data.title}</span>
