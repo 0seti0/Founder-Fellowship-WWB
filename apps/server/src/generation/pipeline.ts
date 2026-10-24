@@ -142,16 +142,24 @@ export async function expandPipeline(options: {
   parent: IdeaContent
   rootPrompt: string
   facts: ExtractedFact[]
+  factIds?: Map<string, string>
   constraints: ExtractedConstraint[]
   assumption?: string
   mechanism?: string
   suitabilityScore?: number
   provider: ModelProvider
   timeoutMs: number
+  existingChildren?: Array<{
+    id: string
+    title: string
+    summary: string
+    mechanism: string
+  }>
 }) {
   const attempts: PipelineAttempt[] = []
   const definition = OPERATOR_REGISTRY[options.operator]
   let content: IdeaContent[] | undefined
+  let effectRejections = new Map<string, string[]>()
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const response = await invoke(
       options.provider,
@@ -190,36 +198,34 @@ export async function expandPipeline(options: {
       const unique =
         new Set(parsed.data.candidates.map((candidate) => candidate.key))
           .size === parsed.data.candidates.length
-      const effectErrors = parsed.data.candidates.flatMap((candidate) =>
-        definition.validateEffect(candidate, {
-          parents: [
-            {
-              id: 'parent',
-              type: 'IDEA',
-              status: 'VISIBLE',
-              operator: null,
-              content: options.parent,
-            },
-          ],
-          assumption: options.assumption,
-        }),
-      )
-      if (
-        parsed.data.operator !== options.operator ||
-        !unique ||
-        !valid ||
-        effectErrors.length
-      ) {
+      if (parsed.data.operator !== options.operator) {
         errorCode = 'OPERATOR_MISMATCH'
-        errorMessage =
-          parsed.data.operator !== options.operator
-            ? 'Expansion operator did not match the requested operator'
-            : !unique
-              ? 'Expansion candidate keys must be unique'
-              : !valid
-                ? 'Expansion cited a missing supporting fact'
-                : `Expansion did not satisfy operator effects: ${effectErrors.join(', ')}`
+        errorMessage = 'Expansion operator did not match the requested operator'
+      } else if (!unique || !valid) {
+        errorCode = 'MALFORMED_OUTPUT'
+        errorMessage = !unique
+          ? 'Expansion candidate keys must be unique'
+          : 'Expansion cited a missing supporting fact'
       } else {
+        effectRejections = new Map(
+          parsed.data.candidates.map((candidate) => [
+            candidate.key,
+            definition
+              .validateEffect(candidate, {
+                parents: [
+                  {
+                    id: 'parent',
+                    type: 'IDEA',
+                    status: 'VISIBLE',
+                    operator: null,
+                    content: options.parent,
+                  },
+                ],
+                assumption: options.assumption,
+              })
+              .map((code) => `OPERATOR_EFFECT:${code}`),
+          ]),
+        )
         content = parsed.data.candidates
       }
     }
@@ -249,8 +255,8 @@ export async function expandPipeline(options: {
     attempts,
   )
   return completePipeline({
-    facts: options.facts.map((item, index) => ({
-      id: `fact-${index}`,
+    facts: options.facts.map((item) => ({
+      id: options.factIds?.get(item.ref) ?? randomUUID(),
       item,
       start: 0,
       end: 0,
@@ -269,7 +275,9 @@ export async function expandPipeline(options: {
     maximumSelected: 3,
     policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
     suitability: options.suitabilityScore ?? 0.5,
-    axisCoverage: false,
+    axisCoverage: true,
+    existingChildren: options.existingChildren ?? [],
+    additionalRejectionReasons: effectRejections,
   })
 }
 
@@ -573,6 +581,8 @@ async function completePipeline({
   policyVersion = SELECTION_POLICY_VERSION,
   suitability = 0,
   axisCoverage = true,
+  existingChildren = [],
+  additionalRejectionReasons = new Map(),
 }: {
   facts: EvidenceSpan[]
   constraints: EvidenceSpan[]
@@ -585,6 +595,13 @@ async function completePipeline({
   policyVersion?: string
   suitability?: number
   axisCoverage?: boolean
+  existingChildren?: Array<{
+    id: string
+    title: string
+    summary: string
+    mechanism: string
+  }>
+  additionalRejectionReasons?: Map<string, string[]>
 }): Promise<PipelineResult> {
   const promptFactIds = new Map<string, string>()
   for (const span of facts) {
@@ -604,6 +621,9 @@ async function completePipeline({
           0.2 * labelScore(evaluation.specificity.label)) /
         2
       const rejectionReasons: string[] = []
+      rejectionReasons.push(
+        ...(additionalRejectionReasons.get(content.key) ?? []),
+      )
       for (const [dimension, score] of [
         ['intentAlignment', evaluation.intentAlignment],
         ['usefulness', evaluation.usefulness],
@@ -667,25 +687,40 @@ async function completePipeline({
   let degraded = false
   let degradationReason: string | null = null
   let similarities: number[][]
+  let existingChildSimilarities: number[][] = []
   const eligible = candidates.filter(
     (candidate) => candidate.eligibility === 'ELIGIBLE',
   )
+  const candidateTexts = eligible.map((candidate) =>
+    [
+      candidate.content.title,
+      candidate.content.summary,
+      candidate.content.mechanism,
+    ].join(' '),
+  )
+  const existingChildTexts = existingChildren.map((child) =>
+    [child.title, child.summary, child.mechanism].join(' '),
+  )
   try {
     const vectors = await provider.embed(
-      eligible.map((candidate) =>
-        [
-          candidate.content.title,
-          candidate.content.summary,
-          candidate.content.mechanism,
-        ].join(' '),
-      ),
+      [...candidateTexts, ...existingChildTexts],
       AbortSignal.timeout(timeoutMs),
     )
-    if (!isValidEmbeddingSet(vectors, eligible.length)) {
+    if (
+      !isValidEmbeddingSet(vectors, eligible.length + existingChildren.length)
+    ) {
       throw new Error('Embedding provider returned an invalid vector shape')
     }
     similarities = makeSimilarityMatrix(eligible.length, (left, right) =>
       cosineSimilarity(vectors[left]!, vectors[right]!),
+    )
+    existingChildSimilarities = eligible.map((_, candidateIndex) =>
+      existingChildren.map((_, childIndex) =>
+        cosineSimilarity(
+          vectors[candidateIndex]!,
+          vectors[eligible.length + childIndex]!,
+        ),
+      ),
     )
   } catch (error) {
     // Keep the run usable when embeddings fail; record the degraded text-set fallback.
@@ -700,17 +735,11 @@ async function completePipeline({
       code: 'TEXT_FALLBACK',
     })
     similarities = makeSimilarityMatrix(eligible.length, (left, right) =>
-      textJaccard(
-        [
-          eligible[left]!.content.title,
-          eligible[left]!.content.summary,
-          eligible[left]!.content.mechanism,
-        ].join(' '),
-        [
-          eligible[right]!.content.title,
-          eligible[right]!.content.summary,
-          eligible[right]!.content.mechanism,
-        ].join(' '),
+      textJaccard(candidateTexts[left]!, candidateTexts[right]!),
+    )
+    existingChildSimilarities = candidateTexts.map((candidateText) =>
+      existingChildTexts.map((childText) =>
+        textJaccard(candidateText, childText),
       ),
     )
   }
@@ -718,6 +747,14 @@ async function completePipeline({
   markDuplicates(
     eligible,
     similarities,
+    dedupMode === 'EMBEDDING'
+      ? EMBEDDING_DEDUP_THRESHOLD
+      : TEXT_FALLBACK_DEDUP_THRESHOLD,
+  )
+  markExistingChildDuplicates(
+    eligible,
+    existingChildren,
+    existingChildSimilarities,
     dedupMode === 'EMBEDDING'
       ? EMBEDDING_DEDUP_THRESHOLD
       : TEXT_FALLBACK_DEDUP_THRESHOLD,
@@ -830,6 +867,32 @@ function markDuplicates(
       duplicate.dedupSimilarity = similarities[index]![representativeIndex]!
     }
   }
+}
+
+function markExistingChildDuplicates(
+  eligible: ScoredCandidate[],
+  existingChildren: Array<{ id: string }>,
+  similarities: number[][],
+  threshold: number,
+) {
+  eligible.forEach((candidate, candidateIndex) => {
+    if (candidate.selectionState === 'DUPLICATE') return
+    let bestIndex = -1
+    let bestSimilarity = threshold
+    similarities[candidateIndex]?.forEach((similarity, childIndex) => {
+      if (similarity >= bestSimilarity) {
+        bestSimilarity = similarity
+        bestIndex = childIndex
+      }
+    })
+    if (bestIndex < 0) return
+    candidate.selectionState = 'DUPLICATE'
+    candidate.dedupSimilarity = bestSimilarity
+    candidate.selectionMetadata = {
+      ...candidate.selectionMetadata,
+      duplicateOfNodeId: existingChildren[bestIndex]!.id,
+    }
+  })
 }
 
 export function selectCandidates(

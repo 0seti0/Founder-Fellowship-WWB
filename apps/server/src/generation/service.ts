@@ -364,7 +364,7 @@ export async function expandNode(
   })
   if (!precondition.eligible)
     throw new GenerationServiceError(
-      precondition.reason ?? 'Operator is not eligible for this node',
+      `${precondition.code}: ${precondition.reason ?? 'Operator is not eligible for this node'}`,
       'BAD_REQUEST',
     )
   const [projectNodes, projectEdges] = await Promise.all([
@@ -425,7 +425,10 @@ export async function expandNode(
     status: 'RUNNING',
     modelProvider: provider.identity.provider,
     modelName: provider.identity.model,
-    promptVersions: { expand: EXPAND_PROMPT_VERSION },
+    promptVersions: {
+      evaluate: EVALUATE_PROMPT_VERSION,
+      expand: EXPAND_PROMPT_VERSION,
+    },
     operator: options.operator,
     parentNodeId: parent.id,
     operatorRegistryVersion: OPERATOR_REGISTRY_VERSION,
@@ -443,47 +446,36 @@ export async function expandNode(
   })
   let attempts: PipelineAttempt[] = []
   try {
+    const existingChildren = await db
+      .select({ node: nodes })
+      .from(edges)
+      .innerJoin(nodes, eq(nodes.id, edges.childId))
+      .where(eq(edges.parentId, parent.id))
+    const factIdByRef = new Map(
+      promptRows
+        .filter((item) => item.kind === 'FACT')
+        .map((item) => [item.ref, item.id]),
+    )
     const pipeline = await expandPipeline({
       operator: options.operator,
       parent: parent.content as IdeaContent,
       rootPrompt: project.originalPrompt,
       facts,
+      factIds: factIdByRef,
       constraints,
       assumption: trustedAssumption,
       mechanism: String(parent.content.mechanism ?? ''),
       suitabilityScore: suitability.score,
       provider,
       timeoutMs: options.timeoutMs,
+      existingChildren: existingChildren.map(({ node }) => ({
+        id: node.id,
+        title: node.title,
+        summary: node.summary,
+        mechanism: String((node.content as IdeaContent).mechanism ?? ''),
+      })),
     })
     attempts = pipeline.attempts
-    const existingChildren = await db
-      .select({ node: nodes })
-      .from(edges)
-      .innerJoin(nodes, eq(nodes.id, edges.childId))
-      .where(eq(edges.parentId, parent.id))
-    for (const candidate of pipeline.candidates) {
-      const duplicate = existingChildren.find(
-        ({ node }) =>
-          normalizeDuplicateText(node.title) ===
-            normalizeDuplicateText(candidate.content.title) &&
-          normalizeDuplicateText(node.summary) ===
-            normalizeDuplicateText(candidate.content.summary),
-      )
-      if (duplicate) {
-        candidate.selectionState = 'DUPLICATE'
-        candidate.selectionScore = null
-        candidate.displayPosition = null
-        candidate.selectionMetadata = {
-          ...candidate.selectionMetadata,
-          duplicateOfNodeId: duplicate.node.id,
-        }
-      }
-    }
-    const factIdByRef = new Map(
-      promptRows
-        .filter((item) => item.kind === 'FACT')
-        .map((item) => [item.ref, item.id]),
-    )
     await db.transaction(async (tx) => {
       for (const candidate of pipeline.candidates) {
         await tx.insert(candidates).values({
@@ -938,8 +930,4 @@ function toPromptItemDto(item: typeof promptItems.$inferSelect): PromptItemDto {
     strength: item.strength,
     basis: item.basis,
   }
-}
-
-function normalizeDuplicateText(value: string) {
-  return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ')
 }
