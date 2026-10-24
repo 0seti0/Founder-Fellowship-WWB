@@ -10,6 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MODEL_MODE: mock
+      DATABASE_URL: mysql://unfold:unfold@127.0.0.1:3306/unfold
+      DATABASE_URL_TEST: mysql://unfold:unfold@127.0.0.1:3306/unfold_test
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: unfold
+          MYSQL_USER: unfold
+          MYSQL_PASSWORD: unfold
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -17,9 +34,23 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm format:check
-      - run: pnpm test
-      - run: pnpm build
+      - run: source ~/.nvm/nvm.sh && pnpm install --frozen-lockfile
+      - name: Create integration test database
+        run: source ~/.nvm/nvm.sh && mysql -h 127.0.0.1 -uroot -e "CREATE DATABASE IF NOT EXISTS unfold_test; GRANT ALL PRIVILEGES ON unfold_test.* TO 'unfold'@'%'; FLUSH PRIVILEGES"
+        env:
+          MYSQL_PWD: root
+      - name: Allow trigger migrations with binary logging
+        run: source ~/.nvm/nvm.sh && mysql -h 127.0.0.1 -uroot -e 'SET GLOBAL log_bin_trust_function_creators = 1'
+        env:
+          MYSQL_PWD: root
+      - run: source ~/.nvm/nvm.sh && pnpm db:migrate
+      - run: source ~/.nvm/nvm.sh && DATABASE_URL="$DATABASE_URL_TEST" pnpm db:migrate
+      - run: source ~/.nvm/nvm.sh && pnpm typecheck
+      - run: source ~/.nvm/nvm.sh && pnpm lint
+      - run: source ~/.nvm/nvm.sh && pnpm format:check
+      - run: source ~/.nvm/nvm.sh && pnpm test
+      - run: source ~/.nvm/nvm.sh && pnpm test:integration
+      - run: source ~/.nvm/nvm.sh && pnpm build
+      - name: Install Playwright Chromium
+        run: source ~/.nvm/nvm.sh && pnpm --filter @unfold/web exec playwright install --with-deps chromium
+      - run: source ~/.nvm/nvm.sh && pnpm test:e2e

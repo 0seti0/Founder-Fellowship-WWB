@@ -81,6 +81,8 @@ The Product kernel above defines the permanent product rules. These invariants a
 Prerequisites: Node.js 24 (Node.js 22 or newer is supported), Corepack with pnpm 10, and Docker
 with Compose.
 
+Non-interactive shells must run `source ~/.nvm/nvm.sh` before invoking `node` or `pnpm`.
+
 ```sh
 corepack enable
 pnpm install
@@ -96,8 +98,8 @@ Install Playwright's Chromium browser before running end-to-end tests:
 pnpm --filter @unfold/web exec playwright install --with-deps chromium
 ```
 
-Integration tests need MySQL running with `pnpm db:up` and migrations applied with
-`pnpm db:migrate`. The web smoke test does not require MySQL.
+Integration and end-to-end tests need MySQL running with `pnpm db:up` and migrations applied with
+`pnpm db:migrate`.
 
 Useful commands: `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`,
 `pnpm test:integration`, `pnpm test:e2e`, `pnpm db:generate`, and `pnpm db:migrate`.
