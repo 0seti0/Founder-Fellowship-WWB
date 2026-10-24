@@ -287,6 +287,12 @@ export async function applyGraphPatch(
       .set({ status: 'SUCCEEDED', finishedAt: new Date() })
       .where(eq(generationRuns.id, patch.runId))
     const timestamp = new Date()
+    if (expansion) {
+      await tx
+        .update(projects)
+        .set({ updatedAt: timestamp })
+        .where(eq(projects.id, patch.projectId))
+    }
     await tx.insert(events).values({
       id: randomUUID(),
       projectId: patch.projectId,

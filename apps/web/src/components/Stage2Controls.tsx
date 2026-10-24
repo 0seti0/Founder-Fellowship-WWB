@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   IdeaContentSchema,
   type GraphNodeDto,
@@ -36,6 +36,7 @@ export function Stage2Controls({
   useMockScenario: boolean
   onChanged: () => Promise<void>
 }) {
+  const queryClient = useQueryClient()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -99,11 +100,11 @@ export function Stage2Controls({
       if (action === 'reject') await trpcClient.nodes.reject.mutate(input)
       if (action === 'archive') await trpcClient.nodes.archive.mutate(input)
       if (action === 'setActive') await trpcClient.nodes.setActive.mutate(input)
-      await onChanged()
       setNotice('Saved.')
     } catch (caught) {
       setError(message(caught))
     } finally {
+      await refreshMutationQueries(queryClient, projectId, onChanged)
       setPending(false)
     }
   }
@@ -126,7 +127,6 @@ export function Stage2Controls({
         setExpansionState('failure')
         setError(result.errorCode ?? 'Expansion failed.')
       } else {
-        await onChanged()
         const updated = await trpcClient.projects.get.query({ id: projectId })
         const hasChildren = updated.nodes.some(
           (child) => child.runId === result.runId,
@@ -137,6 +137,7 @@ export function Stage2Controls({
       setExpansionState('failure')
       setError(message(caught))
     } finally {
+      await refreshMutationQueries(queryClient, projectId, onChanged)
       setPending(false)
     }
   }
@@ -169,11 +170,11 @@ export function Stage2Controls({
             .filter(Boolean),
         },
       })
-      await onChanged()
       setNotice('Changes saved.')
     } catch (caught) {
       setError(message(caught))
     } finally {
+      await refreshMutationQueries(queryClient, projectId, onChanged)
       setPending(false)
     }
   }
@@ -346,6 +347,20 @@ export function Stage2Controls({
       {notice && <p role="status">{notice}</p>}
     </section>
   )
+}
+
+async function refreshMutationQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  projectId: string,
+  onChanged: () => Promise<void>,
+) {
+  await Promise.all([
+    queryClient.invalidateQueries({
+      queryKey: ['operator-options', projectId],
+    }),
+    queryClient.invalidateQueries({ queryKey: ['projects', 'list'] }),
+    onChanged(),
+  ])
 }
 
 function message(value: unknown) {

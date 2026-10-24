@@ -79,6 +79,10 @@ export async function steerNode(
           updatedAt: timestamp,
         })
         .where(eq(nodes.id, node.id))
+      await tx
+        .update(projects)
+        .set({ updatedAt: timestamp })
+        .where(eq(projects.id, input.projectId))
       await event(action === 'pin' ? 'NODE_PINNED' : 'NODE_UNPINNED', {})
       return { changed: true }
     }
@@ -93,19 +97,23 @@ export async function steerNode(
         .update(nodes)
         .set({ status: nextStatus, updatedAt: timestamp })
         .where(eq(nodes.id, node.id))
+      const fallback =
+        project.activeNodeId === node.id
+          ? await nearestVisibleAncestor(tx, input.projectId, node.id)
+          : undefined
+      await tx
+        .update(projects)
+        .set({
+          updatedAt: timestamp,
+          ...(project.activeNodeId === node.id
+            ? { activeNodeId: fallback?.id ?? null }
+            : {}),
+        })
+        .where(eq(projects.id, input.projectId))
       await event(action === 'reject' ? 'NODE_REJECTED' : 'NODE_ARCHIVED', {
         previousStatus: node.status,
       })
       if (project.activeNodeId === node.id) {
-        const fallback = await nearestVisibleAncestor(
-          tx,
-          input.projectId,
-          node.id,
-        )
-        await tx
-          .update(projects)
-          .set({ activeNodeId: fallback?.id ?? null, updatedAt: timestamp })
-          .where(eq(projects.id, input.projectId))
         await event(
           'ACTIVE_NODE_CHANGED',
           {
@@ -172,6 +180,10 @@ export async function steerNode(
         updatedAt: timestamp,
       })
       .where(eq(nodes.id, node.id))
+    await tx
+      .update(projects)
+      .set({ updatedAt: timestamp })
+      .where(eq(projects.id, input.projectId))
     await event('NODE_EDITED', { changes })
     return { changed: true }
   })

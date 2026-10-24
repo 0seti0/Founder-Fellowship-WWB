@@ -9,6 +9,7 @@ import {
   hypotheses,
   nodes,
   promptItems,
+  projects,
 } from '../src/db/schema'
 import { runMigrations } from '../src/db/migrate'
 import { appRouter } from '../src/trpc/router'
@@ -336,6 +337,50 @@ describe('MySQL integration', () => {
     expect(expandedEvent?.payload).toMatchObject({
       displayedCount: expect.any(Number),
     })
+  })
+
+  it('moves an expanded project ahead in project ordering, including empty runs', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const older = await caller.projects.create({
+      prompt: 'Test a neighborhood bakery with breakfast boxes.',
+    })
+    const newer = await caller.projects.create({
+      prompt: 'Test a neighborhood bakery with lunch boxes.',
+    })
+    const { db } = getDatabase(databaseUrl)
+    const orderingTime = Date.now() - 10_000
+    await db
+      .update(projects)
+      .set({ updatedAt: new Date(orderingTime) })
+      .where(eq(projects.id, older.projectId))
+    await db
+      .update(projects)
+      .set({ updatedAt: new Date(orderingTime + 5_000) })
+      .where(eq(projects.id, newer.projectId))
+    const before = await caller.projects.list()
+    expect(
+      before.findIndex((project) => project.id === newer.projectId),
+    ).toBeLessThan(
+      before.findIndex((project) => project.id === older.projectId),
+    )
+
+    const initial = await caller.projects.get({ id: older.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    const expanded = await caller.projects.expand({
+      projectId: older.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+      mockScenario: 'none-pass',
+    })
+    expect(expanded.status).toBe('SUCCEEDED')
+    expect(
+      (await caller.projects.get({ id: older.projectId })).latestExpansionRun
+        ?.status,
+    ).toBe('SUCCEEDED')
+    const after = await caller.projects.list()
+    expect(
+      after.findIndex((project) => project.id === older.projectId),
+    ).toBeLessThan(after.findIndex((project) => project.id === newer.projectId))
   })
 
   it.each(['GROUND', 'REFRAME', 'LEAP', 'INVERT', 'TRANSPLANT'] as const)(
