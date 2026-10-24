@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import type { FrameCandidate, MockScenario } from '@unfold/shared'
-import { createModelProvider, type ModelProvider } from '../src/model/provider'
-import { generatePipeline, PipelineError } from '../src/generation/pipeline'
+import type {
+  ExtractedConstraint,
+  FrameCandidate,
+  MockScenario,
+} from '@unfold/shared'
+import {
+  createModelProvider,
+  evaluateHardConstraint,
+  type ModelProvider,
+} from '../src/model/provider'
+import {
+  generatePipeline,
+  PipelineError,
+  selectCandidates,
+  type ScoredCandidate,
+} from '../src/generation/pipeline'
 
 const prompt = 'I want to open a bakery for neighbors.'
 const timeoutMs = 100
@@ -19,6 +32,176 @@ async function generateForPrompt(
 
 async function generate(mockScenario?: MockScenario) {
   return generateForPrompt(prompt, mockScenario)
+}
+
+const contactTerms =
+  /\b(?:contact|interview|ask|invite|survey|call|email|message|talk|meet|reach(?:\s+out)?)(?:s|ed|ing)?\b/i
+
+const candidateText = (candidate: ScoredCandidate) =>
+  [
+    candidate.content.title,
+    candidate.content.summary,
+    candidate.content.mechanism,
+    candidate.content.firstTest,
+  ].join(' ')
+
+function makeConstraintCandidate(firstTest: string): FrameCandidate {
+  return {
+    key: 'constraint-test',
+    title: 'Neighborhood bakery direction',
+    summary: 'A small bakery trial for nearby residents.',
+    hypothesis: {
+      statement: 'A focused bakery trial could test local interest.',
+      axes: {
+        goal: 'test demand',
+        beneficiary: 'neighbors',
+        motivation: 'convenience',
+        mechanism: 'sample batch',
+        timeHorizon: 'months',
+        risk: 'low',
+      },
+      assumptions: ['Nearby residents are interested.'],
+      supportingFactRefs: [],
+      counterevidence: [],
+      falsifiers: ['The trial does not attract interest.'],
+    },
+    preservedIntent: 'Explore a neighborhood bakery.',
+    changedAssumptions: ['Start with one local trial.'],
+    fitRationale: 'A small trial provides useful evidence.',
+    strongestObjection: 'The trial may not represent demand.',
+    firstTest,
+    mechanism: 'Bake a sample tray and record the result.',
+    facets: ['local trial'],
+    distance: 'near',
+  }
+}
+
+function makeHardConstraint(evidence: string): ExtractedConstraint {
+  return {
+    ref: 'c1',
+    text: evidence,
+    evidence,
+    strength: 'hard',
+    basis: 'explicit',
+  }
+}
+
+const selectionFacets = [
+  'audience',
+  'accessibility',
+  'cost',
+  'convenience',
+  'learning',
+  'trust',
+]
+
+type SelectionLabels = Record<
+  'intentAlignment' | 'usefulness' | 'specificity',
+  'low' | 'medium' | 'high'
+>
+
+function makeSelectionCandidate(
+  ordinal: number,
+  axes: FrameCandidate['hypothesis']['axes'],
+  labelOverrides: Partial<SelectionLabels> = {},
+): ScoredCandidate {
+  const content: FrameCandidate = {
+    key: `selection-${ordinal}`,
+    title: `Selection candidate ${ordinal}`,
+    summary: 'A concrete direction for testing the idea.',
+    hypothesis: {
+      statement: `A direction for candidate ${ordinal}.`,
+      axes,
+      assumptions: ['The audience is reachable.'],
+      supportingFactRefs: [],
+      counterevidence: [],
+      falsifiers: ['A simple test disproves the direction.'],
+    },
+    preservedIntent: 'Explore the idea.',
+    changedAssumptions: ['Use a focused initial audience.'],
+    fitRationale: 'It offers a concrete next step.',
+    strongestObjection: 'The audience may not respond.',
+    firstTest: 'Run a small test with a clear success measure.',
+    mechanism: 'Use a simple prototype.',
+    facets: [...selectionFacets],
+    distance: 'near',
+  }
+  const labels: SelectionLabels = {
+    intentAlignment: labelOverrides.intentAlignment ?? 'high',
+    usefulness: labelOverrides.usefulness ?? 'high',
+    specificity: labelOverrides.specificity ?? 'high',
+  }
+  const scoreLabel = (label: SelectionLabels[keyof SelectionLabels]) =>
+    label === 'high' ? 2 : label === 'medium' ? 1 : 0
+  const qualityScore =
+    (0.45 * scoreLabel(labels.intentAlignment) +
+      0.35 * scoreLabel(labels.usefulness) +
+      0.2 * scoreLabel(labels.specificity)) /
+    2
+
+  return {
+    id: `selection-${ordinal}`,
+    ordinal,
+    content,
+    evaluation: {
+      candidateKey: content.key,
+      constraints: [],
+      intentAlignment: {
+        label: labels.intentAlignment,
+        rationale: 'The direction fits the prompt.',
+      },
+      usefulness: {
+        label: labels.usefulness,
+        rationale: 'The direction supports a practical test.',
+      },
+      specificity: {
+        label: labels.specificity,
+        rationale: 'The direction has a concrete scope.',
+      },
+    },
+    qualityScore,
+    completeness: {},
+    genericFirstTest: false,
+    eligibility: 'ELIGIBLE',
+    rejectionReasons: [],
+    selectionState: 'NOT_SELECTED',
+    duplicateOfCandidateId: null,
+    dedupSimilarity: null,
+    selectionScore: null,
+    selectionProbability: 0,
+    selectionMetadata: {},
+    displayPosition: null,
+    hypothesisSupportingFactIds: [],
+  }
+}
+
+function expectContactProhibition(
+  result: Awaited<ReturnType<typeof generateForPrompt>>,
+) {
+  const hardConstraint = result.constraints.find(
+    ({ item }) => 'strength' in item && item.strength === 'hard',
+  )
+  expect(hardConstraint).toBeDefined()
+  const constraintRef = hardConstraint!.item.ref
+  const displayed = result.candidates.filter(
+    (candidate) => candidate.selectionState === 'SELECTED',
+  )
+
+  expect(displayed.length).toBeGreaterThan(0)
+  for (const candidate of displayed) {
+    expect(candidateText(candidate)).not.toMatch(contactTerms)
+  }
+
+  const violated = result.candidates.filter((candidate) =>
+    candidateText(candidate).match(contactTerms),
+  )
+  expect(violated.length).toBeGreaterThan(0)
+  for (const candidate of violated) {
+    expect(candidate.eligibility).toBe('REJECTED')
+    expect(candidate.rejectionReasons).toContain(
+      `HARD_CONSTRAINT_VIOLATED:${constraintRef}`,
+    )
+  }
 }
 
 describe('initial generation pipeline', () => {
@@ -142,33 +325,249 @@ describe('initial generation pipeline', () => {
     const result = await generateForPrompt(
       'I want to open a bakery. I must not contact anyone.',
     )
-    const displayed = result.candidates.filter(
-      (candidate) => candidate.selectionState === 'SELECTED',
-    )
-    const contactTerms =
-      /\b(?:contact|interview|ask|invite|survey|call|email|message|talk|meet|reach(?:\s+out)?)(?:s|ed|ing)?\b/i
-    const candidateText = (candidate: (typeof result.candidates)[number]) =>
-      [
-        candidate.content.title,
-        candidate.content.summary,
-        candidate.content.mechanism,
-        candidate.content.firstTest,
-      ].join(' ')
+    expectContactProhibition(result)
+  })
 
-    expect(displayed.length).toBeGreaterThan(0)
-    for (const candidate of displayed) {
-      expect(candidateText(candidate)).not.toMatch(contactTerms)
-    }
-
-    const violated = result.candidates.filter((candidate) =>
-      candidateText(candidate).match(contactTerms),
+  it('extracts no-contact as a hard constraint and rejects contact candidates', async () => {
+    const result = await generateForPrompt(
+      'I want a no-contact customer service business.',
     )
-    expect(violated.length).toBeGreaterThan(0)
-    for (const candidate of violated) {
-      expect(candidate.eligibility).toBe('REJECTED')
-      expect(candidate.rejectionReasons).toContain(
-        'HARD_CONSTRAINT_VIOLATED:c1',
-      )
+    expect(
+      result.constraints.some(
+        ({ item }) =>
+          'strength' in item &&
+          item.strength === 'hard' &&
+          /no-contact/i.test(item.evidence),
+      ),
+    ).toBe(true)
+    expectContactProhibition(result)
+  })
+
+  it('extracts no-ads as a hard constraint', async () => {
+    const result = await generateForPrompt(
+      'Build a reading app for kids, no-ads.',
+    )
+
+    expect(
+      result.constraints.some(
+        ({ item }) =>
+          'strength' in item &&
+          item.strength === 'hard' &&
+          /no-ads/i.test(item.evidence),
+      ),
+    ).toBe(true)
+  })
+
+  it('keeps no-code as a fact while enforcing a separate contact ban', async () => {
+    const result = await generateForPrompt(
+      'I want to build a no-code app. I must not contact anyone.',
+    )
+
+    expect(
+      result.constraints.some(
+        ({ item }) =>
+          'strength' in item &&
+          item.strength === 'hard' &&
+          /no-code/i.test(item.evidence),
+      ),
+    ).toBe(false)
+    expectContactProhibition(result)
+  })
+
+  it('checks every hyphenated ban in a constraint', () => {
+    const constraint = makeHardConstraint('no-interviews and no-selling')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Interview five neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('checks hyphenated bans alongside ordinary negations', () => {
+    const constraint = makeHardConstraint(
+      'I want a no-contact bakery and must not spend money.',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Interview five neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('keeps coordinated actions inside an ordinary negation scope', () => {
+    const constraint = makeHardConstraint('I must not buy or sell')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('splits coordinated actions at a new ordinary negation', () => {
+    const constraint = makeHardConstraint(
+      'I must not buy and must not contact customers',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Interview five neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Bake a sample tray and post a sign-up sheet.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('ends a negation scope at a comma-joined new clause', () => {
+    const constraint = makeHardConstraint('I must not buy, I can sell')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+  })
+
+  it('keeps comma-coordinated actions inside a negation scope', () => {
+    const constraint = makeHardConstraint('I must not buy, sell, or trade')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Trade baked goods with a neighbor cafe.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+  })
+
+  it('ends an ordinary negation scope at but', () => {
+    const constraint = makeHardConstraint(
+      'I must not spend money but can borrow equipment',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate("Borrow a friend's oven for a trial bake."),
+        constraint,
+      ),
+    ).toBe('unknown')
+  })
+
+  it('ignores negated mentions of a hyphenated ban in candidate text', async () => {
+    const constraint = makeHardConstraint(
+      'I want a no-commitment neighborhood bakery trial',
+    )
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Run a no-commitment test by Friday.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sign a commitment with a supplier.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Do not contact anyone.'),
+        makeHardConstraint('no-contact'),
+      ),
+    ).toBe('unknown')
+
+    const result = await generateForPrompt(
+      'I want a no-commitment neighborhood bakery trial.',
+    )
+    const riskCandidate = result.candidates.find((candidate) =>
+      /no-commitment test/i.test(candidate.content.firstTest),
+    )
+
+    expect(
+      result.constraints.some(
+        ({ item }) =>
+          'strength' in item &&
+          item.strength === 'hard' &&
+          /no-commitment/i.test(item.evidence),
+      ),
+    ).toBe(true)
+    if (riskCandidate) {
+      expect(
+        riskCandidate.rejectionReasons.filter((reason) =>
+          reason.startsWith('HARD_CONSTRAINT_VIOLATED:'),
+        ),
+      ).toEqual([])
     }
   })
 
@@ -187,6 +586,92 @@ describe('initial generation pipeline', () => {
           /no-code/i.test(item.evidence),
       ),
     ).toBe(false)
+  })
+
+  it('selects two eligible candidates that differ on only one axis', () => {
+    const firstAxes: FrameCandidate['hypothesis']['axes'] = {
+      goal: 'learn',
+      beneficiary: 'families',
+      motivation: 'convenience',
+      mechanism: 'newsletter',
+      timeHorizon: 'months',
+      risk: 'low',
+    }
+    const candidates = [
+      makeSelectionCandidate(1, firstAxes),
+      makeSelectionCandidate(2, { ...firstAxes, goal: 'build' }),
+    ]
+
+    selectCandidates(candidates, candidates, [
+      [1, 0],
+      [0, 1],
+    ])
+
+    expect(candidates.map((candidate) => candidate.selectionState)).toEqual([
+      'SELECTED',
+      'SELECTED',
+    ])
+  })
+
+  it('keeps quality dominant over axis coverage and bounds the coverage bonus', () => {
+    const firstAxes: FrameCandidate['hypothesis']['axes'] = {
+      goal: 'learn',
+      beneficiary: 'families',
+      motivation: 'convenience',
+      mechanism: 'newsletter',
+      timeHorizon: 'months',
+      risk: 'low',
+    }
+    const first = makeSelectionCandidate(1, firstAxes)
+    const higherQuality = makeSelectionCandidate(2, {
+      ...firstAxes,
+      goal: 'build',
+    })
+    const broaderCoverage = makeSelectionCandidate(
+      3,
+      {
+        goal: 'launch',
+        beneficiary: 'teachers',
+        motivation: 'growth',
+        mechanism: 'marketplace',
+        timeHorizon: 'years',
+        risk: 'high',
+      },
+      { specificity: 'medium' },
+    )
+    const candidates = [first, higherQuality, broaderCoverage]
+
+    selectCandidates(candidates, candidates, [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ])
+
+    expect(first.selectionState).toBe('SELECTED')
+    expect(higherQuality.selectionState).toBe('SELECTED')
+    expect(higherQuality.displayPosition).toBe(2)
+    expect(broaderCoverage.displayPosition).toBe(3)
+
+    const selected = candidates.filter(
+      (candidate) => candidate.selectionState === 'SELECTED',
+    )
+    for (const candidate of selected) {
+      const components = candidate.selectionMetadata.components as Record<
+        string,
+        unknown
+      >
+      const axisCoverageBonus = components.axisCoverageBonus as number
+      expect(typeof axisCoverageBonus).toBe('number')
+      expect(axisCoverageBonus).toBeGreaterThanOrEqual(0)
+      expect(axisCoverageBonus).toBeLessThanOrEqual(0.04)
+      if (candidate.displayPosition === 1) {
+        expect(axisCoverageBonus).toBe(0)
+      }
+    }
+    expect(
+      (higherQuality.selectionMetadata.components as Record<string, unknown>)
+        .axisCoverageBonus,
+    ).toBe(0.02)
   })
 
   it('keeps Node.js in the generated subject', async () => {
@@ -319,7 +804,7 @@ describe('initial generation pipeline', () => {
     )
     expect(selected.length).toBeLessThanOrEqual(4)
     expect(selected[0]?.selectionMetadata).toMatchObject({
-      policyVersion: 'initial-mmr-v1',
+      policyVersion: 'initial-mmr-v2',
       randomized: false,
       note: 'deterministic policy; selectionProbability is not a propensity for off-policy evaluation',
       rank: 1,

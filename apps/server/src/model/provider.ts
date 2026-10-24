@@ -28,6 +28,24 @@ export type ModelProvider = {
   embed(texts: string[], signal: AbortSignal): Promise<number[][]>
 }
 
+const hyphenatedNoModifiers = new Set([
+  'code',
+  'brainer',
+  'frills',
+  'nonsense',
+  'fuss',
+  'show',
+])
+
+function findHyphenatedBans(text: string): string[] {
+  const bans = new Set<string>()
+  for (const match of text.matchAll(/\bno[-‐‑](\p{L}+)/giu)) {
+    const word = match[1]!.toLowerCase()
+    if (!hyphenatedNoModifiers.has(word)) bans.add(word)
+  }
+  return [...bans]
+}
+
 export class ProviderError extends Error {
   constructor(
     message: string,
@@ -122,13 +140,16 @@ class MockProvider implements ModelProvider {
     const facts: ExtractedFact[] = []
     const constraints: ExtractedConstraint[] = []
     const explicitMarker =
-      /\b(?:must(?:\s+not|n['’]t)?|need to|have to|cannot|can['’]t|do(?:\s+not|n['’]t)\s+want(?:\s+to)?|no more than|no(?![-‐])|under|only|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?),?|within|without|never)\b/i
+      /\b(?:must(?:\s+not|n['’]t)?|need to|have to|cannot|can['’]t|do(?:\s+not|n['’]t)\s+want(?:\s+to)?|no more than|no(?![-‐‑])|under|only|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))?),?|within|without|never)\b/i
     const softMarker = /\b(?:ideally|prefer|would like|i'd like|hopefully)\b/i
 
     for (const rawClause of prompt.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
       const clause = rawClause[0].trim()
       if (!clause) continue
-      if (explicitMarker.test(clause)) {
+      if (
+        explicitMarker.test(clause) ||
+        findHyphenatedBans(clause).length > 0
+      ) {
         constraints.push({
           ref: `c${constraints.length + 1}`,
           text: clause,
@@ -177,7 +198,11 @@ class MockProvider implements ModelProvider {
       facts: ExtractedFact[]
       constraints: ExtractedConstraint[]
     }
-    const subject = getSubject(prompt)
+    const subject = getSubject(
+      prompt.replace(/\bno[-‐‑](\p{L}+)/giu, (modifier, word: string) =>
+        hyphenatedNoModifiers.has(word.toLowerCase()) ? modifier : '',
+      ),
+    )
     const firstFactRef = facts[0]?.ref
     const offset = stableHash(prompt) % archetypes.length
     const selected = Array.from({ length: 6 }, (_, index) => {
@@ -284,6 +309,7 @@ class MockProvider implements ModelProvider {
 const constraintStopWords = new Set([
   'a',
   'an',
+  'and',
   'anybody',
   'anyone',
   'anything',
@@ -291,6 +317,7 @@ const constraintStopWords = new Set([
   'as',
   'at',
   'be',
+  'but',
   'by',
   'for',
   'from',
@@ -299,6 +326,7 @@ const constraintStopWords = new Set([
   'it',
   'me',
   'my',
+  'nor',
   'of',
   'on',
   'or',
@@ -336,27 +364,50 @@ const constraintSynonyms: Record<string, string[]> = {
   spend: ['spend', 'buy', 'pay', 'cost', 'budget', 'purchase'],
 }
 
-function evaluateHardConstraint(
+export function evaluateHardConstraint(
   candidate: FrameCandidate,
   constraint: ExtractedConstraint,
 ): 'violated' | 'unknown' {
-  const negation = constraint.evidence.match(
-    /\b(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐])|without|never)\b\s+(.+)/i,
+  const terms = new Set(findHyphenatedBans(constraint.evidence))
+  const ordinaryNegationMarker = String.raw`(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐‑])|without|never)`
+  const ordinaryNegation = new RegExp(
+    String.raw`\b${ordinaryNegationMarker}\b\s+(.+?)(?=;|$|\s+but\b|,\s+(?=(?:i|we|you|they|he|she|it|but|can|may|will|should|could|might|is|are)\b)|,?\s+(?:and|or)\s+(?=\b${ordinaryNegationMarker}\b|\bno[-‐‑]\p{L}))`,
+    'giu',
   )
-  if (!negation?.[1]) return 'unknown'
 
-  const terms = (negation[1].toLowerCase().match(/[a-z]+/g) ?? [])
-    .filter((word) => !constraintStopWords.has(word))
-    .slice(0, 3)
-  if (!terms.length) return 'unknown'
+  for (const match of constraint.evidence.matchAll(ordinaryNegation)) {
+    const capture = match[1]!
+    const hyphenatedWords = new Set(
+      [...capture.matchAll(/\bno[-‐‑](\p{L}+)/giu)].flatMap(
+        (ban) => ban[0].toLowerCase().match(/[a-z]+/g) ?? [],
+      ),
+    )
+    const ordinaryTerms = (capture.toLowerCase().match(/[a-z]+/g) ?? [])
+      .filter(
+        (word) => !constraintStopWords.has(word) && !hyphenatedWords.has(word),
+      )
+      .slice(0, 4)
+    for (const term of ordinaryTerms) terms.add(term)
+  }
 
+  if (terms.size === 0) return 'unknown'
+
+  return candidateMatchesConstraintTerms(candidate, [...terms])
+}
+
+function candidateMatchesConstraintTerms(
+  candidate: FrameCandidate,
+  terms: string[],
+): 'violated' | 'unknown' {
   const candidateText = [
     candidate.title,
     candidate.summary,
     candidate.mechanism,
     candidate.firstTest,
   ].join(' ')
-  const candidateWords = stemWords(candidateText)
+  const candidateWords = stemWords(
+    candidateText.replace(/\b(?:no|not|without|never)[-‐‑\s]+\p{L}+/giu, ' '),
+  )
   for (const term of terms) {
     const normalizedTerm = stemWord(term)
     const expansions = constraintSynonyms[normalizedTerm] ?? [normalizedTerm]

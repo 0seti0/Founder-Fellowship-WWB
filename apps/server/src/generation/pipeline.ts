@@ -23,7 +23,7 @@ import {
 } from '../model/provider'
 
 export const SCHEMA_VERSION = 'stage1-v1'
-export const SELECTION_POLICY_VERSION = 'initial-mmr-v1'
+export const SELECTION_POLICY_VERSION = 'initial-mmr-v2'
 export const EMBEDDING_DEDUP_THRESHOLD = 0.92
 export const TEXT_FALLBACK_DEDUP_THRESHOLD = 0.8
 
@@ -675,7 +675,7 @@ function markDuplicates(
   }
 }
 
-function selectCandidates(
+export function selectCandidates(
   candidates: ScoredCandidate[],
   eligible: ScoredCandidate[],
   similarities: number[][],
@@ -717,16 +717,26 @@ function selectCandidates(
                     similarities[candidateIndex]![eligible.indexOf(item)]!,
                 ),
               )
+        const minAxisDifference =
+          selected.length === 0
+            ? 0
+            : Math.min(
+                ...selected.map((item) =>
+                  axisDifferenceCount(item.content, candidate.content),
+                ),
+              )
+        const axisCoverageBonus = (0.04 * Math.min(2, minAxisDifference)) / 2
         return {
           candidate,
-          score: candidate.qualityScore + facetBonus - redundancy,
+          score:
+            candidate.qualityScore +
+            facetBonus +
+            axisCoverageBonus -
+            redundancy,
           facetBonus,
+          axisCoverageBonus,
           redundancy,
         }
-      })
-      .filter(({ candidate }) => {
-        if (selected.length !== 1) return true
-        return axisDifferenceCount(selected[0]!.content, candidate.content) >= 2
       })
       .sort((left, right) => {
         const difference = right.score - left.score
@@ -748,6 +758,7 @@ function selectCandidates(
       components: {
         qualityScore: next.candidate.qualityScore,
         facetBonus: next.facetBonus,
+        axisCoverageBonus: next.axisCoverageBonus,
         redundancy: next.redundancy,
       },
     }
@@ -761,6 +772,7 @@ function selectCandidates(
         components: {
           qualityScore: candidate.qualityScore,
           facetBonus: 0,
+          axisCoverageBonus: 0,
           redundancy: 0,
         },
       }
@@ -771,6 +783,7 @@ function selectCandidates(
         components: {
           qualityScore: candidate.qualityScore,
           facetBonus: 0,
+          axisCoverageBonus: 0,
           redundancy: 0,
         },
       }

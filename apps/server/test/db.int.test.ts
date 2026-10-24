@@ -75,24 +75,35 @@ describe('MySQL integration', () => {
     expect(project.latestRun).toMatchObject({
       status: 'SUCCEEDED',
       schemaVersion: 'stage1-v1',
-      selectionPolicyVersion: 'initial-mmr-v1',
+      selectionPolicyVersion: 'initial-mmr-v2',
     })
 
-    const axes = selected.map((candidate) => candidate.hypothesis.axes)
-    for (let left = 0; left < axes.length; left += 1) {
-      for (let right = left + 1; right < axes.length; right += 1) {
-        const sharedAxes = Object.keys(axes[left]!).filter(
-          (axis) =>
-            axes[left]![axis as keyof (typeof axes)[number]] ===
-            axes[right]![axis as keyof (typeof axes)[number]],
-        )
-        expect(
-          Object.keys(axes[left]!).length - sharedAxes.length,
-        ).toBeGreaterThanOrEqual(2)
+    const { db, pool } = getDatabase(databaseUrl)
+    const persistedSelected = (
+      await db
+        .select({
+          displayPosition: candidates.displayPosition,
+          selectionState: candidates.selectionState,
+          selectionMetadata: candidates.selectionMetadata,
+        })
+        .from(candidates)
+        .where(eq(candidates.runId, project.latestRun!.id))
+    )
+      .filter((candidate) => candidate.selectionState === 'SELECTED')
+      .sort((left, right) => left.displayPosition! - right.displayPosition!)
+    expect(persistedSelected).toHaveLength(4)
+    for (const candidate of persistedSelected) {
+      const components = candidate.selectionMetadata.components as
+        Record<string, unknown> | undefined
+      const axisCoverageBonus = components?.axisCoverageBonus
+      expect(typeof axisCoverageBonus).toBe('number')
+      expect(axisCoverageBonus as number).toBeGreaterThanOrEqual(0)
+      expect(axisCoverageBonus as number).toBeLessThanOrEqual(0.04)
+      if (candidate.displayPosition === 1) {
+        expect(axisCoverageBonus).toBe(0)
       }
     }
 
-    const { db, pool } = getDatabase(databaseUrl)
     const projectEvents = await caller.events.list({
       projectId: created.projectId,
     })
