@@ -470,6 +470,46 @@ describe('initial generation pipeline', () => {
     ).toBe('unknown')
   })
 
+  it('ends a negation scope at a comma-joined new clause', () => {
+    const constraint = makeHardConstraint('I must not buy, I can sell')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('unknown')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+  })
+
+  it('keeps comma-coordinated actions inside a negation scope', () => {
+    const constraint = makeHardConstraint('I must not buy, sell, or trade')
+
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Sell a limited preorder batch to neighbors.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Trade baked goods with a neighbor cafe.'),
+        constraint,
+      ),
+    ).toBe('violated')
+    expect(
+      evaluateHardConstraint(
+        makeConstraintCandidate('Buy ingredients for a trial batch.'),
+        constraint,
+      ),
+    ).toBe('violated')
+  })
+
   it('ends an ordinary negation scope at but', () => {
     const constraint = makeHardConstraint(
       'I must not spend money but can borrow equipment',

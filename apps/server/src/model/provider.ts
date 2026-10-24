@@ -371,7 +371,7 @@ export function evaluateHardConstraint(
   const terms = new Set(findHyphenatedBans(constraint.evidence))
   const ordinaryNegationMarker = String.raw`(?:must\s+not|mustn['’]t|cannot|can['’]t|do\s+not\s+want\s+to|don['’]t\s+want\s+to|no(?![-‐‑])|without|never)`
   const ordinaryNegation = new RegExp(
-    String.raw`\b${ordinaryNegationMarker}\b\s+(.+?)(?=;|$|\s+but\b|,?\s+(?:and|or)\s+(?=\b${ordinaryNegationMarker}\b|\bno[-‐‑]\p{L}))`,
+    String.raw`\b${ordinaryNegationMarker}\b\s+(.+?)(?=;|$|\s+but\b|,\s+(?=(?:i|we|you|they|he|she|it|but|can|may|will|should|could|might|is|are)\b)|,?\s+(?:and|or)\s+(?=\b${ordinaryNegationMarker}\b|\bno[-‐‑]\p{L}))`,
     'giu',
   )
 
