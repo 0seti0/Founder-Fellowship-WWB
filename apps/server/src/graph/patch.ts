@@ -291,13 +291,17 @@ export async function applyGraphPatch(
       id: randomUUID(),
       projectId: patch.projectId,
       runId: patch.runId,
-      nodeId: null,
+      nodeId: expansion ? run.parentNodeId : null,
       type: expansion ? 'NODE_EXPANDED' : 'INITIAL_GENERATED',
       payload: {
         nodeIds: [...nodeIdsByCandidate.values()],
         candidateIds: patch.ops.map((operation) => operation.candidateId),
         ...(expansion
-          ? { operator: run.operator, parentNodeId: run.parentNodeId }
+          ? {
+              operator: run.operator,
+              parentNodeId: run.parentNodeId,
+              displayedCount: nodeIdsByCandidate.size,
+            }
           : {}),
       },
       dedupeKey: null,

@@ -93,7 +93,9 @@ export async function steerNode(
         .update(nodes)
         .set({ status: nextStatus, updatedAt: timestamp })
         .where(eq(nodes.id, node.id))
-      await event(action === 'reject' ? 'NODE_REJECTED' : 'NODE_ARCHIVED', {})
+      await event(action === 'reject' ? 'NODE_REJECTED' : 'NODE_ARCHIVED', {
+        previousStatus: node.status,
+      })
       if (project.activeNodeId === node.id) {
         const fallback = await nearestVisibleAncestor(
           tx,
@@ -144,12 +146,22 @@ export async function steerNode(
     ) as EditableIdeaFields
     const before = IdeaContentSchema.parse(node.content)
     const after = IdeaContentSchema.parse({ ...before, ...fields })
-    const changedFields = Object.keys(fields).filter(
-      (key) =>
-        JSON.stringify(before[key as keyof typeof before]) !==
-        JSON.stringify(after[key as keyof typeof after]),
+    const changes = Object.fromEntries(
+      Object.keys(fields)
+        .filter(
+          (key) =>
+            JSON.stringify(before[key as keyof typeof before]) !==
+            JSON.stringify(after[key as keyof typeof after]),
+        )
+        .map((key) => [
+          key,
+          {
+            from: before[key as keyof typeof before],
+            to: after[key as keyof typeof after],
+          },
+        ]),
     )
-    if (!changedFields.length) return { changed: false }
+    if (!Object.keys(changes).length) return { changed: false }
     await tx
       .update(nodes)
       .set({
@@ -160,7 +172,7 @@ export async function steerNode(
         updatedAt: timestamp,
       })
       .where(eq(nodes.id, node.id))
-    await event('NODE_EDITED', { changedFields })
+    await event('NODE_EDITED', { changes })
     return { changed: true }
   })
 }

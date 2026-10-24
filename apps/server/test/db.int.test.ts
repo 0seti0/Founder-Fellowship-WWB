@@ -6,7 +6,9 @@ import {
   candidates,
   edges,
   generationRuns,
+  hypotheses,
   nodes,
+  promptItems,
 } from '../src/db/schema'
 import { runMigrations } from '../src/db/migrate'
 import { appRouter } from '../src/trpc/router'
@@ -291,7 +293,18 @@ describe('MySQL integration', () => {
     expect(
       eventsAfterSteering.find((event) => event.type === 'NODE_EDITED')
         ?.payload,
-    ).toMatchObject({ changedFields: expect.arrayContaining(['title']) })
+    ).toEqual({
+      changes: {
+        title: {
+          from: content.title,
+          to: 'Edited operator direction',
+        },
+      },
+    })
+    expect(
+      eventsAfterSteering.find((event) => event.type === 'NODE_REJECTED')
+        ?.payload,
+    ).toMatchObject({ previousStatus: 'PINNED' })
     await caller.nodes.setActive({
       projectId: created.projectId,
       nodeId: parent.id,
@@ -302,6 +315,27 @@ describe('MySQL integration', () => {
     })
     const clearedActive = await caller.projects.get({ id: created.projectId })
     expect(clearedActive.project.activeNodeId).toBeNull()
+    const archivable = initial.nodes.find(
+      (node) => node.type === 'IDEA' && node.id !== parent.id,
+    )!
+    await caller.nodes.archive({
+      projectId: created.projectId,
+      nodeId: archivable.id,
+    })
+    const eventsAfterArchive = await caller.events.list({
+      projectId: created.projectId,
+    })
+    expect(
+      eventsAfterArchive.find((event) => event.type === 'NODE_ARCHIVED')
+        ?.payload,
+    ).toMatchObject({ previousStatus: 'VISIBLE' })
+    const expandedEvent = eventsAfterArchive.find(
+      (event) => event.type === 'NODE_EXPANDED',
+    )
+    expect(expandedEvent?.nodeId).toBe(parent.id)
+    expect(expandedEvent?.payload).toMatchObject({
+      displayedCount: expect.any(Number),
+    })
   })
 
   it.each(['GROUND', 'REFRAME', 'LEAP', 'INVERT', 'TRANSPLANT'] as const)(
@@ -341,6 +375,7 @@ describe('MySQL integration', () => {
       expect(run.operator).toBe(operator)
       expect(run.operatorRegistryVersion).toBe('operators-v1')
       expect(run.promptVersions.expand).toBe('expand-v1')
+      expect(run.promptVersions.evaluate).toBe('evaluate-v1')
       expect(run.schemaVersion).toBe('expand-v1')
       expect(run.selectionPolicyVersion).toBe('expansion-mmr-v1')
       expect(runCandidates).toHaveLength(6)
@@ -382,6 +417,42 @@ describe('MySQL integration', () => {
       expect(createdNodes.every((node) => node.operator === operator)).toBe(
         true,
       )
+      for (const candidate of persisted.filter(
+        (item) => item.selectionState === 'SELECTED',
+      )) {
+        const components = candidate.selectionMetadata.components as
+          Record<string, unknown> | undefined
+        expect(typeof components?.axisCoverageBonus).toBe('number')
+        expect(components!.axisCoverageBonus as number).toBeGreaterThanOrEqual(
+          0,
+        )
+        expect(components!.axisCoverageBonus as number).toBeLessThanOrEqual(
+          0.04,
+        )
+      }
+      const persistedHypotheses = await db
+        .select()
+        .from(hypotheses)
+        .where(eq(hypotheses.runId, run.id))
+      const promptItemIds = new Set(
+        (await db.select({ id: promptItems.id }).from(promptItems)).map(
+          (item) => item.id,
+        ),
+      )
+      const supportingFactIds = persistedHypotheses.flatMap(
+        (hypothesis) => hypothesis.supportingFactIds,
+      )
+      expect(supportingFactIds.length).toBeGreaterThan(0)
+      expect(supportingFactIds.every((id) => promptItemIds.has(id))).toBe(true)
+      const expandedEvent = (
+        await caller.events.list({
+          projectId: created.projectId,
+        })
+      ).find((event) => event.type === 'NODE_EXPANDED')
+      expect(expandedEvent?.nodeId).toBe(parent.id)
+      expect(expandedEvent?.payload).toMatchObject({
+        displayedCount: createdNodes.length,
+      })
     },
   )
 
@@ -567,7 +638,14 @@ describe('MySQL integration', () => {
     const eventList = await caller.events.list({
       projectId: created.projectId,
     })
-    expect(eventList.at(-1)?.type).toBe('GENERATION_FAILED')
+    expect(eventList.at(-1)).toMatchObject({
+      type: 'GENERATION_FAILED',
+      nodeId: parent.id,
+      payload: {
+        operator: 'GROUND',
+        parentNodeId: parent.id,
+      },
+    })
   })
 
   it.each(['malformed', 'provider-error', 'timeout'] as const)(
@@ -614,7 +692,7 @@ describe('MySQL integration', () => {
         parentNodeId: root.id,
         operator: 'GROUND',
       }),
-    ).rejects.toThrow()
+    ).rejects.toThrow(/^ROOT_NOT_EXPANDABLE: /)
     const after = await db
       .select()
       .from(generationRuns)
