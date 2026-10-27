@@ -344,11 +344,11 @@ function fixtureSummary(
   },
 ) {
   if (operator === 'GROUND')
-    return `Test ${fixture.goal} for ${values.beneficiary} with a small ${fixture.method} trial of ${values.intent}.`
+    return `Test whether a small ${fixture.method} can ${fixture.goal} for ${values.beneficiary}.`
   if (operator === 'REFRAME')
-    return `Serve ${values.beneficiary} through ${fixture.method}, measuring ${fixture.goal} while keeping ${values.intent}.`
+    return `Serve ${values.beneficiary} through ${fixture.method}, measuring whether it can ${fixture.goal}.`
   if (operator === 'LEAP')
-    return `Preserve ${values.intent} by using ${fixture.method} to ${fixture.goal} for ${values.beneficiary}.`
+    return `Keep the original intent, but use ${fixture.method} to ${fixture.goal} for ${values.beneficiary}.`
   if (operator === 'INVERT')
     return `If “${values.assumption}” proves false, ${fixture.method} can ${fixture.goal} for ${values.beneficiary}.`
   return `Adapt ${values.sourceMechanism} into ${fixture.method} in ${values.context} to ${fixture.goal} for ${values.beneficiary}.`
@@ -542,16 +542,18 @@ class MockProvider implements ModelProvider {
       facts: ExtractedFact[]
       constraints: ExtractedConstraint[]
     }
-    const subject = getSubject(
-      prompt.replace(/\bno[-‐‑](\p{L}+)/giu, (modifier, word: string) =>
+    const cleanedPrompt = prompt.replace(
+      /\bno[-‐‑](\p{L}+)/giu,
+      (modifier, word: string) =>
         hyphenatedNoModifiers.has(word.toLowerCase()) ? modifier : '',
-      ),
     )
+    const subject = getSubject(cleanedPrompt)
+    const cues = getTitleCues(cleanedPrompt, subject)
     const firstFactRef = facts[0]?.ref
     const offset = stableHash(prompt) % archetypes.length
     const selected = Array.from({ length: 6 }, (_, index) => {
       const archetype = archetypes[(offset + index) % archetypes.length]!
-      return makeCandidate(archetype, subject, firstFactRef)
+      return makeCandidate(archetype, subject, cues, firstFactRef)
     })
 
     if (this.scenario === 'paraphrase') {
@@ -878,9 +880,11 @@ function includesWordSequence(words: string[], sequence: string[]) {
   )
 }
 
+type TitleCues = { offering: string; audience: string }
+
 type Archetype = {
   key: string
-  title: (subject: string) => string
+  title: (subject: string, cues: TitleCues) => string
   goalNounPhrase: string
   goalVerbPhrase: string
   beneficiary: string
@@ -903,7 +907,8 @@ type Archetype = {
 const archetypes: Archetype[] = [
   {
     key: 'validate-demand',
-    title: (subject) => `Validate local demand for ${subject}`,
+    title: (_subject, cues) =>
+      `Learn whether ${cues.audience} would choose ${cues.offering} over today's options`,
     goalNounPhrase: 'evidence that local residents want the offering',
     goalVerbPhrase: 'validate local customer demand',
     beneficiary: 'potential customers',
@@ -933,7 +938,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'build-community',
-    title: (subject) => `Create a gathering place around ${subject}`,
+    title: (_subject, cues) =>
+      `Turn ${cues.offering} into a weekly gathering for ${cues.audience}`,
     goalNounPhrase: 'a dependable source of connection among neighbors',
     goalVerbPhrase: 'bring neighbors together through recurring gatherings',
     beneficiary: 'people facing the same challenge',
@@ -963,7 +969,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'reduce-cost',
-    title: (subject) => `Test a low-cost version of ${subject}`,
+    title: (_subject, cues) =>
+      `Run a lean, manual version of ${cues.offering} before taking on fixed costs`,
     goalNounPhrase: 'an operating model that remains affordable to sustain',
     goalVerbPhrase: 'make the offering affordable to sustain',
     beneficiary: 'the person running the project',
@@ -993,7 +1000,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'learn-skill',
-    title: (subject) => `Learn by building ${subject}`,
+    title: (_subject, cues) =>
+      `Learn the craft by running ${cues.offering} one weekend at a time`,
     goalNounPhrase: 'practical capability gained through repeated practice',
     goalVerbPhrase: 'build practical capability through practice',
     beneficiary: 'the user as a learner',
@@ -1023,7 +1031,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'create-income',
-    title: (subject) => `Test an early revenue model for ${subject}`,
+    title: (_subject, cues) =>
+      `Test an early revenue model for ${cues.offering}`,
     goalNounPhrase: 'a small but reliable revenue stream',
     goalVerbPhrase: 'earn revenue through a focused paid offer',
     beneficiary: 'the user and their household',
@@ -1053,7 +1062,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'help-someone',
-    title: (subject) => `Serve one customer's need through ${subject}`,
+    title: (_subject, cues) =>
+      `Solve one recurring problem for ${cues.audience} through ${cues.offering}`,
     goalNounPhrase: "a concrete improvement in one person's day",
     goalVerbPhrase: "solve one person's concrete problem",
     beneficiary: 'one person the user knows',
@@ -1083,7 +1093,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'reduce-risk',
-    title: (subject) => `Test the riskiest assumption behind ${subject}`,
+    title: (_subject, cues) =>
+      `Stress-test the assumption ${cues.offering} depends on most`,
     goalNounPhrase: "early evidence about the venture's biggest risk",
     goalVerbPhrase: 'test the riskiest assumption before committing resources',
     beneficiary: 'the user before committing',
@@ -1113,7 +1124,8 @@ const archetypes: Archetype[] = [
   },
   {
     key: 'long-term-leverage',
-    title: (subject) => `Build a reusable asset from ${subject}`,
+    title: (_subject, cues) =>
+      `Turn ${cues.offering} into a playbook other places could reuse`,
     goalNounPhrase: 'a reusable asset that compounds over time',
     goalVerbPhrase: 'build an asset that compounds over time',
     beneficiary: 'future users and collaborators',
@@ -1146,6 +1158,7 @@ const archetypes: Archetype[] = [
 function makeCandidate(
   archetype: Archetype,
   subject: string,
+  cues: TitleCues,
   factRef?: string,
 ): FrameCandidate {
   const axes: Axes = {
@@ -1158,7 +1171,7 @@ function makeCandidate(
   }
   return {
     key: archetype.key,
-    title: archetype.title(subject).slice(0, 120),
+    title: archetype.title(subject, cues).slice(0, 120),
     summary: archetype.summary(subject),
     hypothesis: {
       statement: archetype.hypothesis(subject),
@@ -1177,6 +1190,56 @@ function makeCandidate(
     facets: [archetype.facet, archetype.goalNounPhrase],
     distance: archetype.key === 'validate-demand' ? 'near' : 'adjacent',
   }
+}
+
+const cueBoundary = new Set([
+  'that',
+  'which',
+  'who',
+  'for',
+  'to',
+  'in',
+  'and',
+  'or',
+  'with',
+  'where',
+  'while',
+  'so',
+  'because',
+  'but',
+])
+
+function cuePhrase(text: string, maxWords: number) {
+  const words: string[] = []
+  for (const raw of text.split(/\s+/)) {
+    const word = raw.replace(/[^\p{L}\p{N}'’-]+$/u, '')
+    if (!word || cueBoundary.has(word.toLowerCase())) break
+    words.push(word)
+    if (word !== raw || words.length >= maxWords) break
+  }
+  return words.join(' ')
+}
+
+function getTitleCues(prompt: string, subject: string): TitleCues {
+  const offeringMatch =
+    /\b(?:support|sustain|open|start|run|launch|build|make|create)\s+(?:an?\s+|the\s+|my\s+)?([\p{L}][\s\S]*)/iu.exec(
+      prompt,
+    )
+  const offeringNoun = offeringMatch ? cuePhrase(offeringMatch[1]!, 2) : ''
+  const offering =
+    offeringNoun &&
+    /^(?:my|our|the)\s/i.test(subject) &&
+    !subject.toLowerCase().includes(offeringNoun.toLowerCase())
+      ? `${/^[aeiou]/i.test(offeringNoun) ? 'an' : 'a'} ${offeringNoun} in ${subject}`
+      : subject
+  const audienceMatch =
+    /\b(?:helps?|helping|serves?|serving|for)\s+(?!an?\b|the\b|my\b|this\b)([\p{L}][\s\S]*)/iu.exec(
+      prompt,
+    )
+  const audience =
+    (audienceMatch ? cuePhrase(audienceMatch[1]!, 3) : '').toLowerCase() ||
+    'the people it serves'
+  return { offering, audience }
 }
 
 function getSubject(prompt: string) {

@@ -28,6 +28,7 @@ import {
 } from 'react'
 import '@xyflow/react/dist/style.css'
 import { layoutWithPreservedPositions } from './lib/layout'
+import TypeView from './components/TypeView'
 import { buildRenderedGraph } from './lib/renderedGraph'
 import { trpcClient } from './lib/trpc'
 import { Stage2Controls } from './components/Stage2Controls'
@@ -58,6 +59,11 @@ export function App() {
     Boolean(new URLSearchParams(window.location.search).get('node')),
   )
   const [prompt, setPrompt] = useState('')
+  const [view, setView] = useState<'graph' | 'type'>(() =>
+    new URLSearchParams(window.location.search).get('view') === 'type'
+      ? 'type'
+      : 'graph',
+  )
   const [mockScenario, setMockScenario] = useState<MockScenario>('default')
   const [isCreating, setIsCreating] = useState(false)
   const [isRetrying, setIsRetrying] = useState(false)
@@ -349,6 +355,14 @@ export function App() {
     }
   }
 
+  function changeView(next: 'graph' | 'type') {
+    setView(next)
+    const url = new URL(window.location.href)
+    if (next === 'type') url.searchParams.set('view', 'type')
+    else url.searchParams.delete('view')
+    window.history.replaceState(window.history.state, '', url)
+  }
+
   function openNode(nodeId: string) {
     if (!projectData) return
     if (
@@ -400,7 +414,7 @@ export function App() {
       : `${health.data.status} · ${health.data.modelMode}`
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${view === 'type' ? 'theme-type' : ''}`}>
       <header className="topbar">
         <div className="brand">
           <p className="eyebrow">A space to think</p>
@@ -552,6 +566,22 @@ export function App() {
                     directions
                   </p>
                 )}
+                <div
+                  className="view-toggle"
+                  role="group"
+                  aria-label="Workspace view"
+                >
+                  {(['graph', 'type'] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={view === option}
+                      onClick={() => changeView(option)}
+                    >
+                      {option === 'graph' ? 'Graph' : 'Type'}
+                    </button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   className="secondary-button reveal-toggle"
@@ -587,41 +617,56 @@ export function App() {
                   </button>
                 </div>
               )}
-              <div
-                ref={graphContainerRef}
-                className={`workspace-graph ${selectedNode ? 'with-inspector' : ''}`}
-                data-testid="graph-canvas"
-                aria-label="Idea graph"
-              >
-                <ReactFlow
-                  nodes={graphNodes}
-                  edges={graphEdges}
-                  nodeTypes={nodeTypes}
-                  nodesDraggable={false}
-                  nodesConnectable={false}
-                  elementsSelectable={false}
-                  onNodeClick={(_, node) => openNode(node.id)}
-                  onInit={(instance) => {
-                    graphInstanceRef.current = instance
-                    if (
-                      projectData &&
-                      graphFittedProjectRef.current !== projectData.project.id
-                    ) {
-                      requestAnimationFrame(() => {
-                        void instance.fitView({ padding: 0.2 })
-                        graphFittedProjectRef.current = projectData.project.id
-                      })
-                    }
-                  }}
-                  fitView={false}
-                  fitViewOptions={{ padding: 0.2 }}
-                  minZoom={0.2}
-                  proOptions={{ hideAttribution: true }}
+              {view === 'type' ? (
+                <div
+                  className={`workspace-graph workspace-type ${selectedNode ? 'with-inspector' : ''}`}
                 >
-                  <Background color="#e5e1d7" gap={24} size={1} />
-                  <Controls showInteractive={false} />
-                </ReactFlow>
-              </div>
+                  <TypeView
+                    nodes={renderedGraph.nodes}
+                    edges={renderedGraph.edges}
+                    projectId={projectData.project.id}
+                    focusId={selectedNode?.id ?? null}
+                    activeNodeId={projectData.project.activeNodeId}
+                    onOpen={openNode}
+                  />
+                </div>
+              ) : (
+                <div
+                  ref={graphContainerRef}
+                  className={`workspace-graph ${selectedNode ? 'with-inspector' : ''}`}
+                  data-testid="graph-canvas"
+                  aria-label="Idea graph"
+                >
+                  <ReactFlow
+                    nodes={graphNodes}
+                    edges={graphEdges}
+                    nodeTypes={nodeTypes}
+                    nodesDraggable={false}
+                    nodesConnectable={false}
+                    elementsSelectable={false}
+                    onNodeClick={(_, node) => openNode(node.id)}
+                    onInit={(instance) => {
+                      graphInstanceRef.current = instance
+                      if (
+                        projectData &&
+                        graphFittedProjectRef.current !== projectData.project.id
+                      ) {
+                        requestAnimationFrame(() => {
+                          void instance.fitView({ padding: 0.2 })
+                          graphFittedProjectRef.current = projectData.project.id
+                        })
+                      }
+                    }}
+                    fitView={false}
+                    fitViewOptions={{ padding: 0.2 }}
+                    minZoom={0.2}
+                    proOptions={{ hideAttribution: true }}
+                  >
+                    <Background color="#e5e1d7" gap={24} size={1} />
+                    <Controls showInteractive={false} />
+                  </ReactFlow>
+                </div>
+              )}
               {selectedNode && (
                 <Inspector
                   node={selectedNode}
