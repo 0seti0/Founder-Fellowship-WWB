@@ -30,6 +30,7 @@ import '@xyflow/react/dist/style.css'
 import { layoutWithPreservedPositions } from './lib/layout'
 import { buildRenderedGraph } from './lib/renderedGraph'
 import { trpcClient } from './lib/trpc'
+import { LensView } from './components/LensView'
 import { Stage2Controls } from './components/Stage2Controls'
 
 type GraphNodeData = {
@@ -79,6 +80,11 @@ export function App() {
   }>({ projectId: null, positions: new Map() })
   const [revealArchived, setRevealArchived] = useState(
     () => new URLSearchParams(window.location.search).get('reveal') === '1',
+  )
+  const [view, setView] = useState<'graph' | 'lens'>(() =>
+    new URLSearchParams(window.location.search).get('view') === 'lens'
+      ? 'lens'
+      : 'graph',
   )
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const reportedSlateRuns = useRef(new Set<string>())
@@ -377,6 +383,15 @@ export function App() {
     updateUrl(id, null)
   }
 
+  function changeView(next: 'graph' | 'lens') {
+    setView(next)
+    graphFittedProjectRef.current = null
+    const url = new URL(window.location.href)
+    if (next === 'lens') url.searchParams.set('view', 'lens')
+    else url.searchParams.delete('view')
+    window.history.replaceState(null, '', url)
+  }
+
   function toggleRevealArchived() {
     setRevealArchived((current) => {
       const reveal = !current
@@ -552,6 +567,26 @@ export function App() {
                     directions
                   </p>
                 )}
+                <div
+                  className="view-toggle"
+                  role="group"
+                  aria-label="Workspace view"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={view === 'graph'}
+                    onClick={() => changeView('graph')}
+                  >
+                    Graph
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={view === 'lens'}
+                    onClick={() => changeView('lens')}
+                  >
+                    Lens
+                  </button>
+                </div>
                 <button
                   type="button"
                   className="secondary-button reveal-toggle"
@@ -587,41 +622,56 @@ export function App() {
                   </button>
                 </div>
               )}
-              <div
-                ref={graphContainerRef}
-                className={`workspace-graph ${selectedNode ? 'with-inspector' : ''}`}
-                data-testid="graph-canvas"
-                aria-label="Idea graph"
-              >
-                <ReactFlow
-                  nodes={graphNodes}
-                  edges={graphEdges}
-                  nodeTypes={nodeTypes}
-                  nodesDraggable={false}
-                  nodesConnectable={false}
-                  elementsSelectable={false}
-                  onNodeClick={(_, node) => openNode(node.id)}
-                  onInit={(instance) => {
-                    graphInstanceRef.current = instance
-                    if (
-                      projectData &&
-                      graphFittedProjectRef.current !== projectData.project.id
-                    ) {
-                      requestAnimationFrame(() => {
-                        void instance.fitView({ padding: 0.2 })
-                        graphFittedProjectRef.current = projectData.project.id
-                      })
-                    }
-                  }}
-                  fitView={false}
-                  fitViewOptions={{ padding: 0.2 }}
-                  minZoom={0.2}
-                  proOptions={{ hideAttribution: true }}
-                >
-                  <Background color="#e5e1d7" gap={24} size={1} />
-                  <Controls showInteractive={false} />
-                </ReactFlow>
-              </div>
+              {view === 'lens' ? (
+                <LensView
+                  nodes={renderedGraph.nodes}
+                  edges={renderedGraph.edges}
+                  focusId={selectedNode?.id ?? projectData.project.activeNodeId}
+                  activeNodeId={projectData.project.activeNodeId}
+                  withInspector={Boolean(selectedNode)}
+                  onOpen={openNode}
+                />
+              ) : (
+                <>
+                  <div
+                    ref={graphContainerRef}
+                    className={`workspace-graph ${selectedNode ? 'with-inspector' : ''}`}
+                    data-testid="graph-canvas"
+                    aria-label="Idea graph"
+                  >
+                    <ReactFlow
+                      nodes={graphNodes}
+                      edges={graphEdges}
+                      nodeTypes={nodeTypes}
+                      nodesDraggable={false}
+                      nodesConnectable={false}
+                      elementsSelectable={false}
+                      onNodeClick={(_, node) => openNode(node.id)}
+                      onInit={(instance) => {
+                        graphInstanceRef.current = instance
+                        if (
+                          projectData &&
+                          graphFittedProjectRef.current !==
+                            projectData.project.id
+                        ) {
+                          requestAnimationFrame(() => {
+                            void instance.fitView({ padding: 0.2 })
+                            graphFittedProjectRef.current =
+                              projectData.project.id
+                          })
+                        }
+                      }}
+                      fitView={false}
+                      fitViewOptions={{ padding: 0.2 }}
+                      minZoom={0.2}
+                      proOptions={{ hideAttribution: true }}
+                    >
+                      <Background color="#e5e1d7" gap={24} size={1} />
+                      <Controls showInteractive={false} />
+                    </ReactFlow>
+                  </div>
+                </>
+              )}
               {selectedNode && (
                 <Inspector
                   node={selectedNode}
