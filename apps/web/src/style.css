@@ -841,6 +841,15 @@ select:focus-visible {
     font-size: 18px;
   }
 
+  .workspace-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .workspace-heading > div:not(.view-toggle) {
+    flex: 1 1 100%;
+  }
+
   .workspace-graph,
   .exploration:has(.inspector-desktop) .workspace-graph {
     min-height: 420px;
