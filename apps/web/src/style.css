@@ -836,6 +836,15 @@ select:focus-visible {
     grid-template-rows: auto auto minmax(420px, 1fr);
   }
 
+  .workspace-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .workspace-heading > div:not(.view-toggle) {
+    flex: 1 1 100%;
+  }
+
   .workspace-heading h2 {
     max-width: 70vw;
     font-size: 18px;

@@ -29,6 +29,11 @@ test('creates, inspects, and restores a prompt graph', async ({
   const graphCanvas = page.getByTestId('graph-canvas')
   const graphNodes = graphCanvas.locator('.react-flow__node')
   await expect(graphNodes).toHaveCount(5, { timeout: 30_000 })
+  if (testInfo.project.name === 'mobile') {
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(page.viewportSize()!.width)
+  }
   await expect(page.getByTestId('graph-node-root')).toContainText('Your prompt')
   await page.screenshot({
     path: resolve(evidenceDirectory, `${testInfo.project.name}-graph.png`),
