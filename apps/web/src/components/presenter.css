@@ -672,3 +672,179 @@
   outline: 3px solid rgb(58 95 217 / 55%);
   outline-offset: 3px;
 }
+
+.p-bar div.is-waiting::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(58 95 217 / 55%) 50%,
+    transparent 100%
+  );
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: p-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes p-shimmer {
+  from {
+    background-position: -40% 0;
+  }
+
+  to {
+    background-position: 140% 0;
+  }
+}
+
+.p-status.is-failed {
+  color: var(--p-coral);
+}
+
+.p-fork {
+  z-index: 8;
+  inset: 0;
+  padding: 140px 90px 130px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.p-path {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
+.p-path button {
+  max-width: 320px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 9px 16px;
+  box-shadow: var(--p-down);
+  color: var(--p-ink2);
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.p-path button:not(:last-child)::after {
+  content: '  ›';
+}
+
+.p-path button.is-current {
+  color: var(--p-blue);
+  cursor: default;
+}
+
+.p-fork-status {
+  text-align: center;
+}
+
+.p-fork-options {
+  display: grid;
+  gap: 26px;
+}
+
+.p-option {
+  display: flex;
+  min-height: 236px;
+  flex-direction: column;
+  gap: 12px;
+  border: 1.5px solid rgb(255 255 255 / 65%);
+  border-radius: 30px;
+  background: linear-gradient(145deg, #e9edf2, #dbe0e6);
+  padding: 22px 24px;
+  box-shadow: var(--p-up);
+  color: var(--p-ink);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    box-shadow 0.3s,
+    transform 0.3s;
+}
+
+.p-option.is-focused {
+  box-shadow:
+    inset 0 0 0 2px var(--p-blue),
+    var(--p-up);
+  transform: translateY(-3px);
+}
+
+.p-option:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.p-option-hd {
+  display: flex;
+  justify-content: space-between;
+  color: var(--p-ink3);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.p-suggested {
+  color: var(--p-blue);
+}
+
+.p-option-title {
+  font-size: 23px;
+  font-weight: 640;
+  letter-spacing: -0.022em;
+  line-height: 1.16;
+}
+
+.p-option-assume {
+  color: var(--p-ink2);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.p-option-cta {
+  margin-top: auto;
+  color: var(--p-blue);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.p-fork-empty {
+  grid-column: 1 / -1;
+  color: var(--p-ink2);
+  text-align: center;
+}
+
+.p-fork-defend {
+  display: grid;
+  gap: 22px;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.p-fork-defend .p-col {
+  opacity: 1;
+  padding: 20px 24px;
+}
+
+.p-fork-defend .p-col p {
+  font-size: 17px;
+  line-height: 1.3;
+}
+
+.p-fork-defend .p-test {
+  grid-column: auto;
+  max-width: none;
+  text-align: left;
+}
+
+.p-fork-defend .p-test h4 {
+  justify-content: flex-start;
+}

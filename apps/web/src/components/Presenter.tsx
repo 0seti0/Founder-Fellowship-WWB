@@ -1,28 +1,69 @@
-import { useEffect, useRef } from 'react'
-import type {
-  PresenterCandidate,
-  PresenterScript,
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import {
+  scriptFromProgress,
+  type PresenterCandidate,
+  type PresenterScript,
 } from '../lib/presenterScript'
+import { trpcClient } from '../lib/trpc'
+import { ForkPanel } from './ForkPanel'
 import './presenter.css'
 
 const EASE = 'cubic-bezier(.2,.7,.1,1)'
 const SCENES = ['Read', 'Extract', 'Imagine', 'Judge', 'Choose', 'Defend']
 const STAGE_WIDTH = 1600
 const STAGE_HEIGHT = 900
+const WAITING: Record<number, string> = {
+  1: 'Claude is reading for facts and hard constraints',
+  2: 'Claude is writing candidate directions',
+  3: 'Claude is scoring every candidate',
+  4: 'Choosing the strongest set',
+}
 
 type Controller = {
   play: () => void
+  update: (
+    script: PresenterScript,
+    level: number,
+    failure: string | null,
+  ) => void
   step: (delta: number) => void
   dispose: () => void
 }
 
+export type LiveRun = {
+  projectId: string
+  runId: string
+  prompt: string
+  mockScenario: string | null
+}
+
 export function Presenter({
-  script,
+  initial,
+  live,
   onClose,
 }: {
-  script: PresenterScript
+  initial: PresenterScript
+  live: LiveRun | null
   onClose: () => void
 }) {
+  const progress = useQuery({
+    queryKey: ['runs', 'progress', live?.runId],
+    queryFn: () =>
+      trpcClient.runs.progress.query({
+        projectId: live!.projectId,
+        runId: live!.runId,
+      }),
+    enabled: Boolean(live),
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.status !== 'RUNNING' ? false : 800,
+  })
+  const liveData = progress.data
+  const modelLabel = liveData
+    ? `${liveData.modelProvider} · ${liveData.modelName}`
+    : initial.modelLabel
+  const [forking, setForking] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const exitRef = useRef<HTMLButtonElement>(null)
@@ -32,7 +73,13 @@ export function Presenter({
     const root = rootRef.current
     const stage = stageRef.current
     if (!root || !stage) return
-    const controller = createController(root, stage, script)
+    const controller = createController(
+      root,
+      stage,
+      initial,
+      live ? 0 : 4,
+      live ? () => setForking(true) : null,
+    )
     controllerRef.current = controller
     const fit = () => {
       const scale = Math.min(
@@ -53,7 +100,40 @@ export function Presenter({
       controller.dispose()
       controllerRef.current = null
     }
-  }, [script])
+    // The controller is created once per presenter session; live data flows in via update().
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial])
+
+  useEffect(() => {
+    if (!live || !liveData) return
+    const { script, level } = scriptFromProgress(
+      {
+        prompt: live.prompt,
+        modelLabel: `${liveData.modelProvider} · ${liveData.modelName}`,
+        policyVersion: liveData.selectionPolicyVersion,
+        rubricVersion: liveData.rubricVersion,
+      },
+      liveData.progress,
+    )
+    controllerRef.current?.update(
+      script,
+      level,
+      liveData.status === 'FAILED'
+        ? (liveData.errorMessage ?? 'Generation failed')
+        : null,
+    )
+  }, [live, liveData])
+
+  useEffect(() => {
+    if (progress.isError)
+      controllerRef.current?.update(
+        initial,
+        0,
+        progress.error instanceof Error
+          ? progress.error.message
+          : 'Progress unavailable',
+      )
+  }, [progress.isError, progress.error, initial])
 
   useEffect(() => {
     exitRef.current?.focus()
@@ -88,7 +168,8 @@ export function Presenter({
           </div>
           <div className="p-abs p-live">
             <i />
-            Replay of the saved run · {script.modelLabel}
+            {live ? 'Live' : 'Replay of the saved run'}
+            {modelLabel ? ` · ${modelLabel}` : ''}
           </div>
           <div
             className="p-abs p-eyebrow p-status"
@@ -120,6 +201,12 @@ export function Presenter({
             </div>
           </div>
           <div className="p-abs p-log" data-p="log" />
+          {live && forking && (
+            <ForkPanel
+              projectId={live.projectId}
+              mockScenario={live.mockScenario}
+            />
+          )}
           <div className="p-abs p-bar" data-p="bar">
             {SCENES.map((scene, index) => (
               <div key={scene}>
@@ -158,8 +245,13 @@ export function Presenter({
 function createController(
   root: HTMLElement,
   stage: HTMLElement,
-  script: PresenterScript,
+  initialScript: PresenterScript,
+  initialLevel: number,
+  onFork: (() => void) | null = null,
 ): Controller {
+  let script = initialScript
+  let dataLevel = initialLevel
+  let failure: string | null = null
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   const part = (name: string) => {
     const element = root.querySelector<HTMLElement>(`[data-p="${name}"]`)
@@ -210,8 +302,50 @@ function createController(
     animations.add(animation)
     return animation
   }
+  let clock = 0
+  let lastTick = 0
+  let queue: Array<{ t: number; run: () => void }> = []
+  let gates: Array<{ t: number; level: number }> = []
+  let waitingSince: number | null = null
   const at = (seconds: number, run: () => void) => {
-    timers.push(window.setTimeout(run, reduce ? 0 : seconds * 1000))
+    queue.push({ t: seconds, run })
+    queue.sort((a, b) => a.t - b.t)
+  }
+  const gate = (seconds: number, level: number) => {
+    gates.push({ t: seconds, level })
+    gates.sort((a, b) => a.t - b.t)
+  }
+  const tick = () => {
+    const now = performance.now()
+    const delta = lastTick ? (now - lastTick) / 1000 : 0
+    lastTick = now
+    if (failure) return
+    const blocking = gates.find(
+      (item) => item.level > dataLevel && clock >= item.t,
+    )
+    if (blocking) {
+      showWaiting(blocking.level, now)
+      return
+    }
+    gates = gates.filter((item) => item.level > dataLevel || item.t > clock)
+    if (waitingSince !== null) stopWaiting()
+    const limit = gates.find((item) => item.level > dataLevel)?.t ?? Infinity
+    clock = Math.min(limit, clock + (reduce ? 1000 : delta))
+    while (queue[0] && queue[0].t <= clock) queue.shift()!.run()
+  }
+  const showWaiting = (level: number, now: number) => {
+    const bar = barEl.children[level] as HTMLElement | undefined
+    if (waitingSince === null) {
+      waitingSince = now
+      status(WAITING[level] ?? 'Thinking')
+      bar?.classList.add('on', 'is-waiting')
+    }
+    const seconds = Math.floor((now - waitingSince) / 1000)
+    statusEl.textContent = `${WAITING[level] ?? 'Thinking'} · ${seconds}s`
+  }
+  const stopWaiting = () => {
+    waitingSince = null
+    for (const bar of [...barEl.children]) bar.classList.remove('is-waiting')
   }
   const later = (ms: number, run: () => void) => {
     timers.push(window.setTimeout(run, reduce ? 0 : ms))
@@ -223,6 +357,11 @@ function createController(
     intervals = []
     animations.forEach((animation) => animation.cancel())
     animations.clear()
+    queue = []
+    gates = []
+    clock = 0
+    lastTick = 0
+    waitingSince = null
   }
   const type = (
     target: HTMLElement,
@@ -307,11 +446,17 @@ function createController(
     intervals.push(id)
   }
 
-  const candidates = script.candidates
-  const columns = candidates.length <= 6 ? 3 : 4
-  const cardWidth = columns === 3 ? 440 : 340
-  const gridLeft =
-    (STAGE_WIDTH - (columns * cardWidth + (columns - 1) * 40)) / 2
+  let candidates = script.candidates
+  let columns = 3
+  let cardWidth = 440
+  let gridLeft = 0
+  let sunk: PresenterCandidate[] = []
+  const layoutCards = () => {
+    candidates = script.candidates
+    columns = candidates.length <= 6 ? 3 : 4
+    cardWidth = columns === 3 ? 440 : 340
+    gridLeft = (STAGE_WIDTH - (columns * cardWidth + (columns - 1) * 40)) / 2
+  }
   const position = (index: number) => ({
     x: gridLeft + (index % columns) * (cardWidth + 40),
     y: 266 + Math.floor(index / columns) * 236,
@@ -475,18 +620,10 @@ function createController(
     clearAll()
     resetDom()
     phase = 'running'
-    const facts = script.facts.slice(0, 2)
-    const hard = script.hardConstraints
-    const n = candidates.length
-    const imagineSeconds = Math.max(6, n * 0.42 + 2.4)
-    const sunk = candidates.filter(
-      (candidate) =>
-        candidate.outcome === 'REJECTED' || candidate.outcome === 'DUPLICATE',
-    )
-    const judgeSeconds = Math.max(6, n * 0.52 + 1.6 + sunk.length * 0.5)
-    const judgeAt = 8.2 + imagineSeconds
-    const chooseAt = judgeAt + judgeSeconds
-    const defendAt = chooseAt + 5.8
+    sunk = []
+    gate(3.9, 1)
+    gate(8.2, 2)
+    intervals.push(window.setInterval(tick, 50))
 
     at(0.3, () => {
       scene(0, 3.6)
@@ -515,13 +652,15 @@ function createController(
       ;[...promptEl.querySelectorAll<HTMLElement>('.p-fact, .p-soft')].forEach(
         (span, index) => later(120 * index, () => span.classList.add('on')),
       )
-      for (const fact of facts) {
+      for (const fact of script.facts.slice(0, 2)) {
         log(fact.ref, `fact · “${clip(fact.evidence, 64)}”`)
       }
-      if (!facts.length) log('extract', 'no explicit facts found')
+      if (!script.facts.length) log('extract', 'no explicit facts found')
     })
 
     at(5.2, () => {
+      fenceLabelEl.replaceChildren(...fenceLabelNodes(script))
+      fenceEl.classList.toggle('is-empty', !script.hardConstraints.length)
       const stageBox = stage.getBoundingClientRect()
       const scale = stageBox.width / STAGE_WIDTH
       ;[...promptEl.querySelectorAll<HTMLElement>('.p-hard')].forEach(
@@ -569,7 +708,7 @@ function createController(
         )
         glow(800, 780, 1200)
       })
-      const first = hard[0]
+      const first = script.hardConstraints[0]
       if (first)
         log(
           first.ref,
@@ -588,6 +727,9 @@ function createController(
     })
 
     at(8.2, () => {
+      layoutCards()
+      const n = candidates.length
+      const imagineSeconds = Math.max(6, n * 0.42 + 2.4)
       scene(2, imagineSeconds)
       status(`Imagining ${n} different directions`)
       candidates.forEach((candidate, index) => {
@@ -611,203 +753,254 @@ function createController(
         })
       })
       log('generate', `${n} candidates · every one schema-validated`)
-    })
-
-    at(judgeAt, () => {
-      scene(3, judgeSeconds)
-      status('Judging every idea against your words')
-      candidates.forEach((candidate, index) => {
-        const card = cardFor(candidate)
-        if (!card) return
-        later(index * 520, () => {
-          const scan = card.querySelector('.p-scan')
-          if (scan)
-            animate(scan, [{ left: '-140px' }, { left: '460px' }], {
-              duration: 900,
-              easing: 'linear',
-            })
-          ;[...card.querySelectorAll<HTMLElement>('.p-chk')].forEach(
-            (chip, chipIndex) =>
-              later(150 + chipIndex * 130, () => {
-                chip.classList.add(`is-${chip.dataset.state}`)
-                animate(chip, [{ opacity: 0 }, { opacity: 1 }], {
-                  duration: 300,
-                })
-              }),
-          )
-          later(900, () => {
-            const score = card.querySelector('.p-q')
-            if (score)
-              animate(score, [{ opacity: 0 }, { opacity: 1 }], {
-                duration: 300,
-              })
-          })
-        })
-      })
-      log(
-        'evaluate',
-        `${script.rubricVersion ?? 'rubric'} · every candidate scored, every hard constraint checked`,
-      )
-      sunk.forEach((candidate, index) =>
-        later((n * 0.52 + 1.2 + index * 0.5) * 1000, () => {
+      const judgeAt = clock + imagineSeconds
+      gate(judgeAt, 3)
+      at(judgeAt, () => {
+        candidates = script.candidates
+        for (const candidate of candidates) {
           const card = cardFor(candidate)
-          const stamp = card?.querySelector<HTMLElement>('.p-stamp')
-          if (!card || !stamp) return
-          stamp.textContent = candidate.stamp
-          animate(
-            stamp,
-            [
-              { opacity: 0, transform: 'rotate(-6deg) scale(1.8)' },
-              { opacity: 1, transform: 'rotate(-6deg) scale(1)' },
-            ],
-            { duration: 260, easing: 'cubic-bezier(.3,1.6,.5,1)' },
-          )
-          animate(
-            card,
-            [
-              { transform: 'none' },
-              { transform: 'translateX(-5px)' },
-              { transform: 'translateX(4px)' },
-              { transform: 'none' },
-            ],
-            { duration: 260, delay: 200, fill: 'none' },
-          )
-          log(
-            'reject',
-            `candidate ${pad(candidate.ordinal)} · ${(candidate.stamp ?? '').toLowerCase()}`,
-          )
-          later(700, () => card.classList.add('is-sunk'))
-        }),
-      )
-    })
-
-    at(chooseAt, () => {
-      scene(4, 5)
-      status('Choosing the strongest set with the least overlap', 640)
-      for (const candidate of sunk) {
-        const card = cardFor(candidate)
-        if (card)
-          animate(
-            card,
-            [{}, { opacity: 0, transform: 'translateY(30px) scale(.94)' }],
-            { duration: 700 },
-          )
-      }
-      for (const candidate of candidates.filter(
-        (item) => item.outcome === 'NOT_SELECTED',
-      )) {
-        const card = cardFor(candidate)
-        if (!card) continue
-        const stamp = card.querySelector<HTMLElement>('.p-stamp')
-        if (stamp) {
-          stamp.textContent = candidate.stamp
-          stamp.classList.add('is-neutral')
-          animate(stamp, [{ opacity: 0 }, { opacity: 1 }], { duration: 400 })
+          card?.querySelector('.p-ft')?.replaceChildren(...chipsFor(candidate))
+          const quality = card?.querySelector('.p-q')
+          if (quality) quality.textContent = `Q ${candidate.q.toFixed(2)}`
         }
-        card.classList.add('is-sunk')
-        animate(
-          card,
-          [
-            {},
-            {
-              opacity: 0.18,
-              filter: 'grayscale(1) blur(1px)',
-              transform: 'scale(.96)',
-            },
-          ],
-          { duration: 900 },
+        sunk = candidates.filter(
+          (candidate) =>
+            candidate.outcome === 'REJECTED' ||
+            candidate.outcome === 'DUPLICATE',
         )
-        animate(
-          card,
-          [{}, { opacity: 0, transform: 'translateY(30px) scale(.94)' }],
-          { duration: 900, delay: 1500 },
+        const judgeSeconds = Math.max(
+          6,
+          candidates.length * 0.52 + 1.6 + sunk.length * 0.5,
         )
-      }
-      log(
-        'select',
-        `${script.policyVersion} · quality first, minus overlap with earlier picks`,
-      )
-      const picks = script.selected
-      const rowWidth = picks.length * 340 + (picks.length - 1) * 33
-      const rowLeft = (STAGE_WIDTH - rowWidth) / 2
-      picks.forEach((candidate, index) =>
-        later(400 + index * 650, () => {
+        const chooseAt = clock + judgeSeconds
+        const defendAt = chooseAt + 5.8
+        gate(chooseAt, 4)
+        scene(3, judgeSeconds)
+        status('Judging every idea against your words')
+        candidates.forEach((candidate, index) => {
           const card = cardFor(candidate)
           if (!card) return
-          card.classList.add('is-picked')
-          const targetX = rowLeft + index * 373
-          const dx = targetX - parseFloat(card.style.left)
-          const dy = 300 - parseFloat(card.style.top)
-          animate(
-            card,
-            [
-              {},
-              {
-                transform: `translate(${dx}px,${dy}px)`,
-                width: '340px',
-                height: '270px',
-              },
-            ],
-            { duration: 1100, easing: 'cubic-bezier(.7,0,.2,1)' },
-          )
-          later(900, () => {
-            const footer = card.querySelector<HTMLElement>('.p-ft')
-            if (!footer) return
-            const score = document.createElement('span')
-            score.className = 'p-pick-score'
-            score.textContent =
-              candidate.selectionScore === null
-                ? 'Selected'
-                : `Selection score ${candidate.selectionScore.toFixed(3)}`
-            const quality = document.createElement('span')
-            quality.className = 'p-pick-q'
-            quality.textContent = `Q ${candidate.q.toFixed(2)}`
-            footer.replaceChildren(score, quality)
-            animate(footer, [{ opacity: 0 }, { opacity: 1 }], {
-              duration: 500,
+          later(index * 520, () => {
+            const scan = card.querySelector('.p-scan')
+            if (scan)
+              animate(scan, [{ left: '-140px' }, { left: '460px' }], {
+                duration: 900,
+                easing: 'linear',
+              })
+            ;[...card.querySelectorAll<HTMLElement>('.p-chk')].forEach(
+              (chip, chipIndex) =>
+                later(150 + chipIndex * 130, () => {
+                  chip.classList.add(`is-${chip.dataset.state}`)
+                  animate(chip, [{ opacity: 0 }, { opacity: 1 }], {
+                    duration: 300,
+                  })
+                }),
+            )
+            later(900, () => {
+              const score = card.querySelector('.p-q')
+              if (score)
+                animate(score, [{ opacity: 0 }, { opacity: 1 }], {
+                  duration: 300,
+                })
             })
           })
-          const number = document.createElement('div')
-          number.className = 'p-big'
-          number.textContent = pad(index + 1)
-          number.style.left = `${targetX}px`
-          number.style.top = '200px'
-          cardsEl.appendChild(number)
-          animate(
-            number,
-            [
-              { opacity: 0, transform: 'translateY(20px)' },
-              { opacity: 1, transform: 'none' },
-            ],
-            { duration: 800, delay: 600 },
-          )
+        })
+        log(
+          'evaluate',
+          `${script.rubricVersion ?? 'rubric'} · every candidate scored, every hard constraint checked`,
+        )
+        sunk.forEach((candidate, index) =>
+          later((candidates.length * 0.52 + 1.2 + index * 0.5) * 1000, () => {
+            const card = cardFor(candidate)
+            const stamp = card?.querySelector<HTMLElement>('.p-stamp')
+            if (!card || !stamp) return
+            stamp.textContent = candidate.stamp
+            animate(
+              stamp,
+              [
+                { opacity: 0, transform: 'rotate(-6deg) scale(1.8)' },
+                { opacity: 1, transform: 'rotate(-6deg) scale(1)' },
+              ],
+              { duration: 260, easing: 'cubic-bezier(.3,1.6,.5,1)' },
+            )
+            animate(
+              card,
+              [
+                { transform: 'none' },
+                { transform: 'translateX(-5px)' },
+                { transform: 'translateX(4px)' },
+                { transform: 'none' },
+              ],
+              { duration: 260, delay: 200, fill: 'none' },
+            )
+            log(
+              'reject',
+              `candidate ${pad(candidate.ordinal)} · ${(candidate.stamp ?? '').toLowerCase()}`,
+            )
+            later(700, () => card.classList.add('is-sunk'))
+          }),
+        )
+        if (onFork) {
+          at(chooseAt, () => {
+            scene(4, 1)
+            status('')
+            animate(
+              cardsEl,
+              [{}, { opacity: 0, transform: 'translateY(40px) scale(.97)' }],
+              { duration: 800 },
+            )
+            animate(promptEl, [{}, { opacity: 0 }], { duration: 600 })
+            animate(logEl, [{}, { opacity: 0 }], { duration: 600 })
+            later(700, onFork)
+          })
+          return
+        }
+        at(chooseAt, () => {
+          scene(4, 5)
+          status('Choosing the strongest set with the least overlap', 640)
+          candidates = script.candidates
+          for (const candidate of candidates.filter(
+            (item) =>
+              item.outcome === 'REJECTED' || item.outcome === 'DUPLICATE',
+          )) {
+            const card = cardFor(candidate)
+            if (card)
+              animate(
+                card,
+                [{}, { opacity: 0, transform: 'translateY(30px) scale(.94)' }],
+                { duration: 700 },
+              )
+          }
+          for (const candidate of candidates.filter(
+            (item) => item.outcome === 'NOT_SELECTED',
+          )) {
+            const card = cardFor(candidate)
+            if (!card) continue
+            const stamp = card.querySelector<HTMLElement>('.p-stamp')
+            if (stamp) {
+              stamp.textContent = candidate.stamp
+              stamp.classList.add('is-neutral')
+              animate(stamp, [{ opacity: 0 }, { opacity: 1 }], {
+                duration: 400,
+              })
+            }
+            card.classList.add('is-sunk')
+            animate(
+              card,
+              [
+                {},
+                {
+                  opacity: 0.18,
+                  filter: 'grayscale(1) blur(1px)',
+                  transform: 'scale(.96)',
+                },
+              ],
+              { duration: 900 },
+            )
+            animate(
+              card,
+              [{}, { opacity: 0, transform: 'translateY(30px) scale(.94)' }],
+              { duration: 900, delay: 1500 },
+            )
+          }
           log(
-            `pick ${index + 1}`,
-            `candidate ${pad(candidate.ordinal)}${candidate.selectionScore === null ? '' : ` · selection score ${candidate.selectionScore.toFixed(3)}`}`,
+            'select',
+            `${script.policyVersion} · quality first, minus overlap with earlier picks`,
           )
-        }),
-      )
-      glow(800, 420, 1000)
-    })
+          const picks = script.selected
+          const rowWidth = picks.length * 340 + (picks.length - 1) * 33
+          const rowLeft = (STAGE_WIDTH - rowWidth) / 2
+          picks.forEach((candidate, index) =>
+            later(400 + index * 650, () => {
+              const card = cardFor(candidate)
+              if (!card) return
+              card.classList.add('is-picked')
+              const targetX = rowLeft + index * 373
+              const dx = targetX - parseFloat(card.style.left)
+              const dy = 300 - parseFloat(card.style.top)
+              animate(
+                card,
+                [
+                  {},
+                  {
+                    transform: `translate(${dx}px,${dy}px)`,
+                    width: '340px',
+                    height: '270px',
+                  },
+                ],
+                { duration: 1100, easing: 'cubic-bezier(.7,0,.2,1)' },
+              )
+              later(900, () => {
+                const footer = card.querySelector<HTMLElement>('.p-ft')
+                if (!footer) return
+                const score = document.createElement('span')
+                score.className = 'p-pick-score'
+                score.textContent =
+                  candidate.selectionScore === null
+                    ? 'Selected'
+                    : `Selection score ${candidate.selectionScore.toFixed(3)}`
+                const quality = document.createElement('span')
+                quality.className = 'p-pick-q'
+                quality.textContent = `Q ${candidate.q.toFixed(2)}`
+                footer.replaceChildren(score, quality)
+                animate(footer, [{ opacity: 0 }, { opacity: 1 }], {
+                  duration: 500,
+                })
+              })
+              const number = document.createElement('div')
+              number.className = 'p-big'
+              number.textContent = pad(index + 1)
+              number.style.left = `${targetX}px`
+              number.style.top = '200px'
+              cardsEl.appendChild(number)
+              animate(
+                number,
+                [
+                  { opacity: 0, transform: 'translateY(20px)' },
+                  { opacity: 1, transform: 'none' },
+                ],
+                { duration: 800, delay: 600 },
+              )
+              log(
+                `pick ${index + 1}`,
+                `candidate ${pad(candidate.ordinal)}${candidate.selectionScore === null ? '' : ` · selection score ${candidate.selectionScore.toFixed(3)}`}`,
+              )
+            }),
+          )
+          glow(800, 420, 1000)
+        })
 
-    at(defendAt, () => {
-      scene(5, 10)
-      status('')
-      animate(
-        cardsEl,
-        [{}, { opacity: 0, transform: 'translateY(40px) scale(.97)' }],
-        { duration: 800 },
-      )
-      animate(promptEl, [{}, { opacity: 0 }], { duration: 600 })
-      animate(fenceEl, [{}, { opacity: 0.35 }], { duration: 600 })
-      showDefend(0, true)
+        at(defendAt, () => {
+          scene(5, 10)
+          status('')
+          animate(
+            cardsEl,
+            [{}, { opacity: 0, transform: 'translateY(40px) scale(.97)' }],
+            { duration: 800 },
+          )
+          animate(promptEl, [{}, { opacity: 0 }], { duration: 600 })
+          animate(fenceEl, [{}, { opacity: 0.35 }], { duration: 600 })
+          showDefend(0, true)
+        })
+      })
     })
   }
 
   return {
     play,
+    update: (next, level, failed) => {
+      script = next
+      dataLevel = level
+      if (failed && !failure) {
+        failure = failed
+        stopWaiting()
+        statusEl.textContent = `This run failed · ${failed}`
+        statusEl.classList.add('is-failed')
+      }
+    },
     step: (delta) => {
       const total = script.selected.length
+      if (!total) return
       if (phase !== 'defend') {
         jumpToDefend(delta < 0 ? total - 1 : 0)
         return
@@ -838,21 +1031,23 @@ function buildCard(candidate: PresenterCandidate, compact: boolean) {
   title.className = 'p-t'
   const footer = document.createElement('div')
   footer.className = 'p-ft'
-  footer.append(
-    ...candidate.checks.map((check) => {
-      const chip = document.createElement('span')
-      chip.className = 'p-chk'
-      chip.dataset.state = check.state
-      chip.append(document.createElement('i'), check.label)
-      return chip
-    }),
-  )
+  footer.append(...chipsFor(candidate))
   const scan = document.createElement('div')
   scan.className = 'p-scan'
   const stamp = document.createElement('div')
   stamp.className = 'p-stamp'
   card.append(header, title, footer, scan, stamp)
   return card
+}
+
+function chipsFor(candidate: PresenterCandidate) {
+  return candidate.checks.map((check) => {
+    const chip = document.createElement('span')
+    chip.className = 'p-chk'
+    chip.dataset.state = check.state
+    chip.append(document.createElement('i'), check.label)
+    return chip
+  })
 }
 
 function fenceLabelNodes(script: PresenterScript) {

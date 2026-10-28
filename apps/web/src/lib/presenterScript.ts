@@ -2,6 +2,7 @@ import type {
   CandidateDto,
   GenerationRunDto,
   PromptItemDto,
+  RunProgress,
 } from '@unfold/shared'
 
 type SourceItem = Pick<
@@ -14,7 +15,6 @@ type SourceCandidate = Pick<
   | 'id'
   | 'runId'
   | 'ordinal'
-  | 'quality'
   | 'qualityScore'
   | 'constraintEvaluations'
   | 'eligibility'
@@ -23,6 +23,7 @@ type SourceCandidate = Pick<
   | 'selectionScore'
   | 'displayPosition'
 > & {
+  quality: CandidateDto['quality'] | null
   content: {
     title: string
     distance?: string
@@ -115,37 +116,106 @@ export function buildPresenterScript(
 ): PresenterScript | null {
   const run = source.latestRun
   if (!run || run.status !== 'SUCCEEDED') return null
-  const hardItems = source.analysis.constraints.filter(
-    (item) => item.strength === 'hard',
+  const script = assembleScript(
+    {
+      prompt: source.project.originalPrompt,
+      modelLabel: `${run.modelProvider} · ${run.modelName}`,
+      policyVersion: run.selectionPolicyVersion,
+      rubricVersion: run.rubricVersion ?? null,
+    },
+    source.analysis.facts,
+    source.analysis.constraints,
+    source.candidates.filter((candidate) => candidate.runId === run.id),
   )
-  const candidates = source.candidates
-    .filter((candidate) => candidate.runId === run.id)
+  return script.selected.length ? script : null
+}
+
+export type LiveMeta = {
+  prompt: string
+  modelLabel: string
+  policyVersion: string
+  rubricVersion: string | null
+}
+
+const STAGE_LEVELS: Record<RunProgress['stage'], number> = {
+  STARTED: 0,
+  EXTRACTED: 1,
+  FRAMED: 2,
+  EVALUATED: 3,
+  SELECTED: 4,
+}
+
+export function scriptFromProgress(
+  meta: LiveMeta,
+  progress: RunProgress | null,
+): { script: PresenterScript; level: number } {
+  const candidates: SourceCandidate[] = (progress?.candidates ?? []).map(
+    (candidate) => ({
+      id: candidate.key,
+      runId: 'live',
+      ordinal: candidate.ordinal,
+      quality: candidate.quality,
+      qualityScore: candidate.qualityScore ?? 0,
+      constraintEvaluations: candidate.constraintEvaluations,
+      eligibility: candidate.eligibility ?? 'ELIGIBLE',
+      rejectionReasons: candidate.rejectionReasons,
+      selectionState: candidate.selectionState,
+      selectionScore: candidate.selectionScore,
+      displayPosition: candidate.displayPosition,
+      content: {
+        title: candidate.title,
+        distance: candidate.distance ?? undefined,
+        fitRationale: candidate.fitRationale,
+        strongestObjection: candidate.strongestObjection,
+        firstTest: candidate.firstTest,
+      },
+    }),
+  )
+  return {
+    script: assembleScript(
+      meta,
+      progress?.facts ?? [],
+      progress?.constraints ?? [],
+      candidates,
+    ),
+    level: progress ? STAGE_LEVELS[progress.stage] : 0,
+  }
+}
+
+function assembleScript(
+  meta: LiveMeta,
+  facts: SourceItem[],
+  constraints: SourceItem[],
+  sourceCandidates: SourceCandidate[],
+): PresenterScript {
+  const hardItems = constraints.filter((item) => item.strength === 'hard')
+  const candidates = [...sourceCandidates]
     .sort((a, b) => a.ordinal - b.ordinal)
     .map((candidate) => toPresenterCandidate(candidate, hardItems))
+  const positions = new Map(
+    sourceCandidates.map((candidate) => [
+      candidate.id,
+      candidate.displayPosition ?? Number.MAX_SAFE_INTEGER,
+    ]),
+  )
   const selected = candidates
     .filter((candidate) => candidate.outcome === 'SELECTED')
     .sort(
       (a, b) =>
-        (displayPositionOf(source, a.id) ?? Number.MAX_SAFE_INTEGER) -
-          (displayPositionOf(source, b.id) ?? Number.MAX_SAFE_INTEGER) ||
+        (positions.get(a.id) ?? 0) - (positions.get(b.id) ?? 0) ||
         a.ordinal - b.ordinal,
     )
-  if (!selected.length) return null
-  const prompt = clipPrompt(source.project.originalPrompt)
+  const prompt = clipPrompt(meta.prompt)
   return {
     prompt,
-    segments: buildPromptSegments(
-      prompt,
-      source.analysis.facts,
-      source.analysis.constraints,
-    ),
-    facts: source.analysis.facts.map(toItem),
+    segments: buildPromptSegments(prompt, facts, constraints),
+    facts: facts.map(toItem),
     hardConstraints: hardItems.map(toItem),
     candidates,
     selected,
-    modelLabel: `${run.modelProvider} · ${run.modelName}`,
-    policyVersion: run.selectionPolicyVersion,
-    rubricVersion: run.rubricVersion ?? null,
+    modelLabel: meta.modelLabel,
+    policyVersion: meta.policyVersion,
+    rubricVersion: meta.rubricVersion,
   }
 }
 
@@ -225,11 +295,6 @@ function toItem(item: SourceItem): PresenterItem {
   return { ref: item.ref, text: item.text, evidence: item.evidenceText }
 }
 
-function displayPositionOf(source: PresenterSource, id: string) {
-  return source.candidates.find((candidate) => candidate.id === id)
-    ?.displayPosition
-}
-
 function toPresenterCandidate(
   candidate: SourceCandidate,
   hardItems: SourceItem[],
@@ -244,7 +309,7 @@ function toPresenterCandidate(
     distance: candidate.content.distance ?? null,
     q: candidate.qualityScore,
     checks: [
-      ...qualityChecks(candidate.quality),
+      ...(candidate.quality ? qualityChecks(candidate.quality) : []),
       ...constraintChecks(candidate, hardItems),
     ],
     outcome,
