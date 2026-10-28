@@ -182,7 +182,7 @@ function effects(
   if (operator === 'TRANSPLANT') {
     const parent = ctx.parents[0]
     const parentContent = parent?.content as Partial<IdeaContent> | undefined
-    const beneficiary = parentContent?.hypothesis?.axes.beneficiary
+    const beneficiary = parentContent?.hypothesis?.axes?.beneficiary
     if (!candidate.targetContext) errors.push('TARGET_CONTEXT_REQUIRED')
     else if (
       beneficiary &&

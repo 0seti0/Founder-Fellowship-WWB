@@ -1,5 +1,7 @@
 import type {
+  CandidateQuality,
   CandidateEvaluation,
+  GenerationStrategy,
   IdeaContent,
   Hypothesis,
   MockScenario,
@@ -70,6 +72,10 @@ export const generationRuns = mysqlTable(
       unknown
     > | null>(),
     schemaVersion: varchar('schema_version', { length: 64 }).notNull(),
+    generationStrategy: varchar('generation_strategy', {
+      length: 64,
+    }).$type<GenerationStrategy>(),
+    rubricVersion: varchar('rubric_version', { length: 64 }),
     selectionPolicyVersion: varchar('selection_policy_version', {
       length: 64,
     }).notNull(),
@@ -213,13 +219,7 @@ export const candidates = mysqlTable(
     constraintEvaluations: json('constraint_evaluations')
       .$type<CandidateEvaluation['constraints']>()
       .notNull(),
-    quality: json('quality')
-      .$type<{
-        intentAlignment: CandidateEvaluation['intentAlignment']
-        usefulness: CandidateEvaluation['usefulness']
-        specificity: CandidateEvaluation['specificity']
-      }>()
-      .notNull(),
+    quality: json('quality').$type<CandidateQuality>().notNull(),
     completeness: json('completeness')
       .$type<Record<string, boolean>>()
       .notNull(),
@@ -243,6 +243,10 @@ export const candidates = mysqlTable(
     selectionMetadata: json('selection_metadata')
       .$type<Record<string, unknown>>()
       .notNull(),
+    generationMeta: json('generation_meta').$type<Record<
+      string,
+      unknown
+    > | null>(),
     promptVersion: varchar('prompt_version', { length: 64 }).notNull(),
     schemaVersion: varchar('schema_version', { length: 64 }).notNull(),
     policyVersion: varchar('policy_version', { length: 64 }).notNull(),
@@ -271,7 +275,7 @@ export const hypotheses = mysqlTable(
       .notNull()
       .references(() => candidates.id, { onDelete: 'cascade' }),
     statement: text('statement').notNull(),
-    axes: json('axes').$type<Hypothesis['axes']>().notNull(),
+    axes: json('axes').$type<Hypothesis['axes'] | null>(),
     assumptions: json('assumptions').$type<string[]>().notNull(),
     supportingFactIds: json('supporting_fact_ids').$type<string[]>().notNull(),
     counterevidence: json('counterevidence').$type<string[]>().notNull(),

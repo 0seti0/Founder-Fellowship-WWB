@@ -1,19 +1,36 @@
 import type {
   Axes,
-  CandidateEvaluation,
-  EvaluateOutput,
+  EvaluateOutputV2,
   ExtractedConstraint,
   ExtractedFact,
   ExtractionOutput,
   IdeaContent,
   FrameCandidate,
-  FrameOutput,
   MockScenario,
   UnaryOperator,
 } from '@unfold/shared'
+import {
+  EvaluateOutputV2Schema,
+  ExpandOutputSchema,
+  ExtractionOutputSchema,
+  FrameOutputSchema,
+  FrameSingleOutputSchema,
+  FunctionalEquivalenceOutputSchema,
+  SsotOutputSchema,
+} from '@unfold/shared'
 import type { ModelMode } from '@unfold/shared'
+import { z } from 'zod'
+import { env as runtimeEnv } from '../env'
+import {
+  FRAME_PROMPT_VERSION,
+  FRAME_SINGLE_PROMPT_VERSION,
+  FRAME_PARAPHRASE_PROMPT_VERSION,
+  FRAME_RANDOM_STRING_PROMPT_VERSION,
+  SSOT_PROMPT_VERSION,
+} from '../generation/prompts'
 
-export type GenerationTask = 'extract' | 'frame' | 'evaluate' | 'expand'
+export type GenerationTask =
+  'extract' | 'frame' | 'evaluate' | 'expand' | 'compare'
 
 export type StructuredGenerationRequest = {
   task: GenerationTask
@@ -22,6 +39,7 @@ export type StructuredGenerationRequest = {
   system: string
   input: unknown
   signal: AbortSignal
+  onUsage?: (usage: Record<string, number>) => void
 }
 
 export type ModelProvider = {
@@ -395,35 +413,427 @@ export class ProviderError extends Error {
   }
 }
 
-type ProviderEnvironment = {
+function taskSchema(request: StructuredGenerationRequest) {
+  return request.task === 'extract'
+    ? ExtractionOutputSchema
+    : request.task === 'frame'
+      ? request.promptVersion === SSOT_PROMPT_VERSION
+        ? SsotOutputSchema
+        : request.promptVersion === FRAME_SINGLE_PROMPT_VERSION
+          ? FrameSingleOutputSchema
+          : FrameOutputSchema
+      : request.task === 'evaluate'
+        ? EvaluateOutputV2Schema
+        : request.task === 'expand'
+          ? ExpandOutputSchema
+          : FunctionalEquivalenceOutputSchema
+}
+
+type ProviderEnvironment = Partial<typeof runtimeEnv> & {
   MODEL_MODE: ModelMode
 }
 
 export function createModelProvider(
-  env: ProviderEnvironment,
+  environment: ProviderEnvironment,
   opts: { mockScenario?: MockScenario } = {},
 ): ModelProvider {
-  if (env.MODEL_MODE === 'mock') {
+  if (environment.MODEL_MODE === 'mock') {
     return new MockProvider(opts.mockScenario ?? 'default')
   }
-  return new LiveProvider()
+  const configuration = liveConfiguration(environment)
+  return configuration.LLM_PROVIDER === 'anthropic'
+    ? new AnthropicProvider(configuration)
+    : new LiveProvider(configuration)
+}
+
+type LiveConfiguration = Pick<
+  typeof runtimeEnv,
+  | 'LLM_PROVIDER'
+  | 'LLM_API_KEY'
+  | 'MODEL_API_KEY'
+  | 'LLM_BASE_URL'
+  | 'LLM_MODEL_STRONG'
+  | 'LLM_MODEL_FAST'
+  | 'LLM_EMBEDDING_MODEL'
+  | 'LLM_TEMPERATURE'
+  | 'LLM_MAX_TOKENS'
+>
+
+function liveConfiguration(
+  environment: ProviderEnvironment,
+): LiveConfiguration {
+  const provider = environment.LLM_PROVIDER ?? runtimeEnv.LLM_PROVIDER
+  const defaults =
+    provider === 'anthropic'
+      ? {
+          baseUrl: 'https://api.anthropic.com/v1',
+          strongModel: 'claude-sonnet-4-5',
+          fastModel: 'claude-haiku-4-5',
+        }
+      : {
+          baseUrl: 'https://api.openai.com/v1',
+          strongModel: 'gpt-4.1',
+          fastModel: 'gpt-4.1-mini',
+        }
+  const inheritsRuntimeDefaults = provider === runtimeEnv.LLM_PROVIDER
+  return {
+    ...runtimeEnv,
+    ...environment,
+    LLM_PROVIDER: provider,
+    LLM_API_KEY: environment.LLM_API_KEY ?? runtimeEnv.LLM_API_KEY,
+    MODEL_API_KEY: environment.MODEL_API_KEY ?? runtimeEnv.MODEL_API_KEY,
+    LLM_BASE_URL:
+      environment.LLM_BASE_URL ??
+      (inheritsRuntimeDefaults ? runtimeEnv.LLM_BASE_URL : defaults.baseUrl),
+    LLM_MODEL_STRONG:
+      environment.LLM_MODEL_STRONG ??
+      (inheritsRuntimeDefaults
+        ? runtimeEnv.LLM_MODEL_STRONG
+        : defaults.strongModel),
+    LLM_MODEL_FAST:
+      environment.LLM_MODEL_FAST ??
+      (inheritsRuntimeDefaults
+        ? runtimeEnv.LLM_MODEL_FAST
+        : defaults.fastModel),
+    LLM_EMBEDDING_MODEL:
+      environment.LLM_EMBEDDING_MODEL ?? runtimeEnv.LLM_EMBEDDING_MODEL,
+    LLM_TEMPERATURE: environment.LLM_TEMPERATURE ?? runtimeEnv.LLM_TEMPERATURE,
+    LLM_MAX_TOKENS:
+      environment.LLM_MAX_TOKENS ?? runtimeEnv.LLM_MAX_TOKENS ?? 16_000,
+  }
+}
+
+function modelForTask(configuration: LiveConfiguration, task: GenerationTask) {
+  return task === 'frame' || task === 'expand' || task === 'evaluate'
+    ? configuration.LLM_MODEL_STRONG
+    : configuration.LLM_MODEL_FAST
 }
 
 class LiveProvider implements ModelProvider {
-  identity = { provider: 'live', model: 'unimplemented' }
+  readonly identity: { provider: string; model: string }
 
-  async generateStructured(): Promise<never> {
-    throw new ProviderError('Live provider not implemented', 'PROVIDER_ERROR')
+  constructor(private readonly configuration: LiveConfiguration) {
+    this.identity = {
+      provider: 'openai-compatible',
+      model: configuration.LLM_MODEL_STRONG,
+    }
   }
 
-  async embed(): Promise<never> {
-    throw new ProviderError('Live provider not implemented', 'PROVIDER_ERROR')
+  async generateStructured(request: StructuredGenerationRequest) {
+    const apiKey =
+      this.configuration.LLM_API_KEY ?? this.configuration.MODEL_API_KEY
+    if (!apiKey) {
+      throw new ProviderError(
+        'LLM_API_KEY is required for live model requests',
+        'PROVIDER_ERROR',
+      )
+    }
+    const model = modelForTask(this.configuration, request.task)
+    const responseFormat = this.responseFormat(request)
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: request.system },
+        { role: 'user', content: JSON.stringify(request.input) },
+      ],
+      ...(this.configuration.LLM_TEMPERATURE === undefined
+        ? {}
+        : { temperature: this.configuration.LLM_TEMPERATURE }),
+      response_format: responseFormat,
+    }
+    const response = await this.requestJson(
+      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: request.signal,
+      },
+      request.signal,
+    )
+    const envelope = response as {
+      choices?: Array<{ message?: { content?: unknown } }>
+      usage?: Record<string, number>
+    }
+    const content = envelope.choices?.[0]?.message?.content
+    if (envelope.usage) request.onUsage?.(envelope.usage)
+    if (typeof content !== 'string') {
+      throw new ProviderError(
+        'OpenAI-compatible provider returned no message content',
+        'PROVIDER_ERROR',
+      )
+    }
+    try {
+      return JSON.parse(content) as unknown
+    } catch {
+      return content
+    }
   }
+
+  async embed(texts: string[], signal: AbortSignal) {
+    const apiKey =
+      this.configuration.LLM_API_KEY ?? this.configuration.MODEL_API_KEY
+    if (!apiKey) {
+      throw new ProviderError(
+        'LLM_API_KEY is required for live model requests',
+        'PROVIDER_ERROR',
+      )
+    }
+    if (texts.length === 0) return []
+    const response = await this.requestJson(
+      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/embeddings`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.configuration.LLM_EMBEDDING_MODEL,
+          input: texts,
+        }),
+        signal,
+      },
+      signal,
+    )
+    const data = (response as { data?: Array<{ embedding?: unknown }> }).data
+    if (
+      !Array.isArray(data) ||
+      data.length !== texts.length ||
+      data.some(
+        (item) =>
+          !Array.isArray(item.embedding) ||
+          item.embedding.some((value) => typeof value !== 'number'),
+      )
+    ) {
+      throw new ProviderError(
+        'OpenAI-compatible provider returned invalid embeddings',
+        'PROVIDER_ERROR',
+      )
+    }
+    return data.map((item) => item.embedding as number[])
+  }
+
+  private responseFormat(request: StructuredGenerationRequest) {
+    try {
+      const jsonSchema = z.toJSONSchema(taskSchema(request))
+      if (!supportsStrictJsonSchema(jsonSchema)) {
+        return { type: 'json_object' }
+      }
+      const providerSchema = {
+        ...(jsonSchema as Record<string, unknown>),
+      }
+      delete providerSchema.$schema
+      return {
+        type: 'json_schema',
+        json_schema: {
+          name: `${request.task}_${request.schemaVersion}`.replace(
+            /[^a-zA-Z0-9_-]/g,
+            '_',
+          ),
+          strict: true,
+          schema: providerSchema,
+        },
+      }
+    } catch {
+      return { type: 'json_object' }
+    }
+  }
+
+  private async requestJson(
+    url: string,
+    init: RequestInit,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    try {
+      const response = await fetch(url, init)
+      if (!response.ok) {
+        throw new ProviderError(
+          `OpenAI-compatible provider returned HTTP ${response.status}`,
+          'PROVIDER_ERROR',
+        )
+      }
+      return await response.json()
+    } catch (error) {
+      if (error instanceof ProviderError) throw error
+      if (
+        signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw new ProviderError('Model request timed out', 'TIMEOUT')
+      }
+      throw new ProviderError(
+        'OpenAI-compatible provider request failed',
+        'PROVIDER_ERROR',
+      )
+    }
+  }
+}
+
+type AnthropicContentBlock = {
+  type?: string
+  input?: unknown
+  text?: unknown
+}
+
+class AnthropicProvider implements ModelProvider {
+  readonly identity: { provider: string; model: string }
+
+  constructor(private readonly configuration: LiveConfiguration) {
+    this.identity = {
+      provider: 'anthropic',
+      model: configuration.LLM_MODEL_STRONG,
+    }
+  }
+
+  async generateStructured(request: StructuredGenerationRequest) {
+    const apiKey =
+      this.configuration.LLM_API_KEY ?? this.configuration.MODEL_API_KEY
+    if (!apiKey) {
+      throw new ProviderError(
+        'LLM_API_KEY is required for live model requests',
+        'PROVIDER_ERROR',
+      )
+    }
+    const model = modelForTask(this.configuration, request.task)
+    const toolName = `submit_${request.task}`
+    const inputSchema = {
+      ...(z.toJSONSchema(taskSchema(request)) as Record<string, unknown>),
+    }
+    delete inputSchema.$schema
+    const body = {
+      model,
+      max_tokens: this.configuration.LLM_MAX_TOKENS,
+      system: request.system,
+      messages: [{ role: 'user', content: JSON.stringify(request.input) }],
+      tools: [
+        {
+          name: toolName,
+          description: 'Return the result for this task.',
+          input_schema: inputSchema,
+        },
+      ],
+      tool_choice: { type: 'tool', name: toolName },
+      ...(this.configuration.LLM_TEMPERATURE === undefined
+        ? {}
+        : { temperature: this.configuration.LLM_TEMPERATURE }),
+    }
+    const envelope = (await this.requestJson(
+      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: request.signal,
+      },
+      request.signal,
+    )) as {
+      type?: string
+      error?: { type?: string }
+      stop_reason?: string
+      content?: AnthropicContentBlock[]
+      usage?: { input_tokens?: number; output_tokens?: number }
+    }
+    if (envelope.type === 'error') {
+      const errorType = envelope.error?.type
+      throw new ProviderError(
+        `Anthropic provider returned an error${errorType ? ` (${errorType})` : ''}`,
+        'PROVIDER_ERROR',
+      )
+    }
+    if (
+      typeof envelope.usage?.input_tokens === 'number' &&
+      typeof envelope.usage.output_tokens === 'number'
+    ) {
+      request.onUsage?.({
+        input_tokens: envelope.usage.input_tokens,
+        output_tokens: envelope.usage.output_tokens,
+      })
+    }
+    if (envelope.stop_reason === 'max_tokens') {
+      throw new ProviderError(
+        `Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=${this.configuration.LLM_MAX_TOKENS})`,
+        'PROVIDER_ERROR',
+      )
+    }
+    if (!Array.isArray(envelope.content) || envelope.content.length === 0) {
+      throw new ProviderError(
+        'Anthropic provider returned no content',
+        'PROVIDER_ERROR',
+      )
+    }
+    const toolUse = envelope.content.find((block) => block.type === 'tool_use')
+    if (toolUse) return toolUse.input
+    return envelope.content
+      .filter(
+        (block) => block.type === 'text' && typeof block.text === 'string',
+      )
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('')
+  }
+
+  async embed(): Promise<number[][]> {
+    throw new ProviderError(
+      'Anthropic does not provide embeddings',
+      'PROVIDER_ERROR',
+    )
+  }
+
+  private async requestJson(
+    url: string,
+    init: RequestInit,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    try {
+      const response = await fetch(url, init)
+      if (!response.ok) {
+        throw new ProviderError(
+          `Anthropic provider returned HTTP ${response.status}`,
+          'PROVIDER_ERROR',
+        )
+      }
+      return await response.json()
+    } catch (error) {
+      if (error instanceof ProviderError) throw error
+      if (
+        signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw new ProviderError('Model request timed out', 'TIMEOUT')
+      }
+      throw new ProviderError(
+        'Anthropic provider request failed',
+        'PROVIDER_ERROR',
+      )
+    }
+  }
+}
+
+function supportsStrictJsonSchema(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.every(supportsStrictJsonSchema)
+  if (!schema || typeof schema !== 'object') return true
+  const record = schema as Record<string, unknown>
+  if (record.type === 'object' && record.properties) {
+    const properties = record.properties as Record<string, unknown>
+    const required = Array.isArray(record.required) ? record.required : []
+    if (Object.keys(properties).some((key) => !required.includes(key))) {
+      return false
+    }
+  }
+  return Object.values(record).every(supportsStrictJsonSchema)
 }
 
 class MockProvider implements ModelProvider {
   identity = { provider: 'mock', model: 'mock-unfold-v1' }
   private readonly calls = new Map<GenerationTask, number>()
+  private malformedOnceUsed = false
 
   constructor(private readonly scenario: MockScenario) {}
 
@@ -459,11 +869,13 @@ class MockProvider implements ModelProvider {
       case 'extract':
         return this.extract(request.input, attempt)
       case 'frame':
-        return this.frame(request.input)
+        return this.frame(request)
       case 'evaluate':
         return this.evaluate(request.input)
       case 'expand':
         return this.expand(request.input)
+      case 'compare':
+        return this.compare(request.input)
     }
   }
 
@@ -476,7 +888,16 @@ class MockProvider implements ModelProvider {
   }
 
   private shouldBeInvalid(attempt: number) {
-    return this.scenario === 'malformed' || attempt === 1
+    if (this.scenario === 'malformed') return true
+    if (
+      this.scenario === 'malformed-once' &&
+      attempt === 1 &&
+      !this.malformedOnceUsed
+    ) {
+      this.malformedOnceUsed = true
+      return true
+    }
+    return false
   }
 
   private extract(input: unknown, attempt: number): ExtractionOutput {
@@ -536,22 +957,32 @@ class MockProvider implements ModelProvider {
     return { facts, constraints }
   }
 
-  private frame(input: unknown): FrameOutput {
-    const { prompt, facts } = input as {
-      prompt: string
+  private frame(request: StructuredGenerationRequest): unknown {
+    const { originalPrompt, prompt, facts } = request.input as {
+      originalPrompt?: string
+      prompt?: string
       facts: ExtractedFact[]
       constraints: ExtractedConstraint[]
     }
+    const sourcePrompt = originalPrompt ?? prompt ?? ''
     const subject = getSubject(
-      prompt.replace(/\bno[-‐‑](\p{L}+)/giu, (modifier, word: string) =>
+      sourcePrompt.replace(/\bno[-‐‑](\p{L}+)/giu, (modifier, word: string) =>
         hyphenatedNoModifiers.has(word.toLowerCase()) ? modifier : '',
       ),
     )
     const firstFactRef = facts[0]?.ref
-    const offset = stableHash(prompt) % archetypes.length
+    const offset = stableHash(sourcePrompt) % archetypes.length
     const selected = Array.from({ length: 6 }, (_, index) => {
       const archetype = archetypes[(offset + index) % archetypes.length]!
-      return makeCandidate(archetype, subject, firstFactRef)
+      const candidate = makeCandidate(archetype, subject, firstFactRef)
+      if (
+        request.promptVersion !== FRAME_PROMPT_VERSION &&
+        request.promptVersion !== FRAME_SINGLE_PROMPT_VERSION
+      ) {
+        delete candidate.facets
+        delete candidate.hypothesis.axes
+      }
+      return candidate
     })
 
     if (this.scenario === 'paraphrase') {
@@ -582,6 +1013,17 @@ class MockProvider implements ModelProvider {
     if (this.scenario === 'low-quality' && selected[0]) {
       selected[0].firstTest = 'Conduct some more research.'
     }
+    const callIndex = (this.calls.get('frame') ?? 1) - 1
+    const candidate = selected[callIndex % selected.length]!
+    if (request.promptVersion === SSOT_PROMPT_VERSION)
+      return { seed: `mockseed${callIndex}`, candidate }
+    if (
+      request.promptVersion === FRAME_SINGLE_PROMPT_VERSION ||
+      request.promptVersion === FRAME_PARAPHRASE_PROMPT_VERSION ||
+      request.promptVersion === FRAME_RANDOM_STRING_PROMPT_VERSION ||
+      request.promptVersion === SSOT_PROMPT_VERSION
+    )
+      return { candidate }
     return { candidates: selected }
   }
 
@@ -595,7 +1037,7 @@ class MockProvider implements ModelProvider {
     const subject =
       parent.title.trim().split(': ', 1)[0]?.trim() || 'this direction'
     const sourceMechanism = (mechanism || parent.mechanism).trim()
-    const beneficiary = parent.hypothesis.axes.beneficiary
+    const beneficiary = parent.hypothesis.axes?.beneficiary ?? 'neighbors'
     const preservedIntent = parent.preservedIntent
     const trustedAssumption =
       assumption ?? parent.changedAssumptions[0] ?? 'the original assumption'
@@ -677,73 +1119,113 @@ class MockProvider implements ModelProvider {
     }
   }
 
-  private evaluate(input: unknown): EvaluateOutput {
-    const { candidates, constraints } = input as {
-      candidates: FrameCandidate[]
+  private evaluate(input: unknown): EvaluateOutputV2 {
+    const payload = input as {
+      candidates: Array<{ key: string; content: FrameCandidate }>
       constraints: ExtractedConstraint[]
     }
-    const evaluations: CandidateEvaluation[] = candidates.map(
-      (candidate, index) => {
-        let label: 'low' | 'medium' | 'high' =
-          index % 3 === 0 ? 'high' : 'medium'
-        if (this.scenario === 'none-pass') label = 'low'
-        if (this.scenario === 'few-pass' && index < candidates.length - 2)
-          label = 'low'
-        if (this.scenario === 'low-quality' && index === 0) label = 'low'
-        if (this.scenario === 'weak-diverse' && index === 5) label = 'low'
-
-        return {
-          candidateKey: candidate.key,
-          constraints: constraints.map((constraint) => {
-            let status: 'satisfied' | 'violated' | 'unknown' =
-              constraint.strength === 'hard'
-                ? evaluateHardConstraint(candidate, constraint)
-                : 'satisfied'
-            if (this.scenario === 'hard-violation') {
-              if (index === 0 && constraint.strength === 'hard')
-                status = 'violated'
-              else if (index === 1 && constraint.strength === 'hard')
-                status = 'unknown'
-            } else if (constraint.strength === 'soft') {
+    const candidates = payload.candidates.map((item) => item.content)
+    const { constraints } = payload
+    const evaluations = candidates.map((candidate, index) => {
+      const score =
+        this.scenario === 'none-pass' ||
+        (this.scenario === 'few-pass' && index < candidates.length - 2) ||
+        (this.scenario === 'low-quality' && index === 0) ||
+        (this.scenario === 'weak-diverse' && index === 5)
+          ? 0
+          : index % 4 === 3
+            ? 1
+            : 2
+      return {
+        candidateKey: candidate.key,
+        constraints: constraints.map((constraint) => {
+          let status: 'satisfied' | 'violated' | 'unknown' =
+            constraint.strength === 'hard'
+              ? evaluateHardConstraint(candidate, constraint)
+              : 'satisfied'
+          if (this.scenario === 'hard-violation') {
+            if (index === 0 && constraint.strength === 'hard')
+              status = 'violated'
+            else if (index === 1 && constraint.strength === 'hard')
               status = 'unknown'
-            }
-            return {
-              constraintRef: constraint.ref,
-              status,
-              rationale:
-                status === 'unknown'
-                  ? 'The direction does not provide enough detail to verify this.'
-                  : status === 'violated'
-                    ? 'The proposed direction conflicts with this requirement.'
-                    : 'The direction is consistent with this constraint.',
-            }
-          }),
-          intentAlignment: {
-            label,
+          } else if (constraint.strength === 'soft') {
+            status = 'unknown'
+          }
+          return {
+            constraintRef: constraint.ref,
+            status,
             rationale:
-              label === 'low'
-                ? 'The direction is not sufficiently aligned to the prompt.'
-                : 'The direction preserves a plausible reading of the prompt.',
-          },
-          usefulness: {
-            label,
-            rationale:
-              label === 'low'
-                ? 'The direction is unlikely to help the user make progress.'
-                : 'The direction offers a useful way to make progress.',
-          },
-          specificity: {
-            label:
-              this.scenario === 'low-quality' && index === 0 ? 'low' : label,
-            rationale:
-              this.scenario === 'low-quality' && index === 0
-                ? 'The first test is generic rather than observable.'
-                : 'The direction includes a concrete first test.',
-          },
-        }
-      },
-    )
+              status === 'unknown'
+                ? 'The direction does not provide enough detail to verify this.'
+                : status === 'violated'
+                  ? 'The proposed direction conflicts with this requirement.'
+                  : 'The direction is consistent with this constraint.',
+          }
+        }),
+        intentCompatibility: {
+          score,
+          rationale: 'The candidate fits a plausible reading of the prompt.',
+        },
+        decisionUsefulness: {
+          score,
+          rationale: 'The candidate offers a concrete decision or action.',
+        },
+        specificityCoherence: {
+          score,
+          rationale: 'The mechanism and direction are coherent.',
+        },
+        firstTestExecutability: {
+          score,
+          rationale: 'The first test is practical and observable.',
+        },
+        nonObviousness: {
+          score: Math.max(score, 1),
+          rationale: 'The direction is more than a restatement.',
+        },
+      }
+    })
     return { evaluations }
+  }
+
+  private compare(input: unknown) {
+    const { left, right } = input as {
+      left: Pick<FrameCandidate, 'title' | 'summary' | 'mechanism'>
+      right: Pick<FrameCandidate, 'title' | 'summary' | 'mechanism'>
+    }
+    const vector = (candidate: typeof left) =>
+      embedText(
+        `${candidate.title} ${candidate.summary} ${candidate.mechanism}`,
+      )
+    const leftVector = vector(left)
+    const rightVector = vector(right)
+    let dot = 0
+    let leftMagnitude = 0
+    let rightMagnitude = 0
+    for (let index = 0; index < leftVector.length; index += 1) {
+      dot += leftVector[index]! * rightVector[index]!
+      leftMagnitude += leftVector[index]! ** 2
+      rightMagnitude += rightVector[index]! ** 2
+    }
+    const similarity =
+      leftMagnitude && rightMagnitude
+        ? dot / Math.sqrt(leftMagnitude * rightMagnitude)
+        : 0
+    const verdict =
+      similarity >= 0.85
+        ? 'equivalent'
+        : similarity >= 0.5
+          ? 'related_but_distinct'
+          : 'distinct'
+    return {
+      verdict,
+      rationale: `“${left.title}” and “${right.title}” ${
+        verdict === 'equivalent'
+          ? 'pursue the same strategic option.'
+          : verdict === 'related_but_distinct'
+            ? 'share some ground but lead to different actions.'
+            : 'pursue different strategic options.'
+      }`,
+    }
   }
 }
 

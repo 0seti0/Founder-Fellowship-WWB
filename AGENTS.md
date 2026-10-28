@@ -18,6 +18,8 @@ The persisted typed idea DAG is authoritative. Models propose schema-validated
 candidates; the backend checks deterministic preconditions and applies selected
 proposals through restricted transactional graph patches.
 
+See `docs/UNFOLD_POSSIBILITY_ENGINE_SPEC.md` for the implemented pipeline and policy details.
+
 ### Extraction & hypotheses
 
 Exact evidence-span containment applies only to explicitly extracted facts and
@@ -43,8 +45,8 @@ and expand are steering actions, not operators.
 Quality floors combine deterministic completeness and hard-constraint checks
 with structured semantic evaluation of intent alignment, usefulness, and
 specificity. Hard filtering is deterministic; unknown constraint status is not a
-violation. Selection uses near-deduplication and soft facet coverage without
-rigid diversity quotas.
+violation. Selection uses near-deduplication and a quality-minus-redundancy
+penalty, without facet-coverage bonuses or rigid diversity quotas.
 
 ### Logging
 
@@ -103,3 +105,10 @@ Integration and end-to-end tests need MySQL running with `pnpm db:up` and migrat
 
 Useful commands: `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`,
 `pnpm test:integration`, `pnpm test:e2e`, `pnpm db:generate`, and `pnpm db:migrate`.
+
+Mock mode is the default and does not require a model credential. For live generation, set
+`MODEL_MODE=live` and the server-only `LLM_API_KEY`; an OpenAI-compatible base URL and model names
+can be configured with `LLM_BASE_URL`, `LLM_MODEL_STRONG`, `LLM_MODEL_FAST`, and
+`LLM_EMBEDDING_MODEL`, with optional `LLM_TEMPERATURE`. `MODEL_API_KEY` is a deprecated fallback
+and emits a one-line warning without revealing its value. Provider failures do not silently fall
+back to mock output.

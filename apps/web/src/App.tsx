@@ -766,13 +766,15 @@ function Inspector({
           <InspectorSection title="Mechanism">
             {content.mechanism}
           </InspectorSection>
-          <InspectorSection title="Facets">
-            <div className="facet-list">
-              {content.facets.map((facet) => (
-                <span key={facet}>{facet}</span>
-              ))}
-            </div>
-          </InspectorSection>
+          {content.facets?.length ? (
+            <InspectorSection title="Facets">
+              <div className="facet-list">
+                {content.facets.map((facet) => (
+                  <span key={facet}>{facet}</span>
+                ))}
+              </div>
+            </InspectorSection>
+          ) : null}
           <InspectorSection title="Hypothesis — not confirmed intent">
             <p>{content.hypothesis.statement}</p>
             <h4>Assumptions</h4>

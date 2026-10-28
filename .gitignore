@@ -5,5 +5,6 @@ coverage
 playwright-report
 test-results
 apps/web/e2e-evidence/
+apps/server/experiments/out/
 *.tsbuildinfo
 .DS_Store

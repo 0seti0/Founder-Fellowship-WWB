@@ -76,7 +76,7 @@ export function Stage2Controls({
       strongestObjection: content.strongestObjection,
       firstTest: content.firstTest,
       mechanism: content.mechanism,
-      facets: content.facets.join(', '),
+      facets: content.facets?.join(', ') ?? '',
     })
   }, [node.id, content])
 
@@ -169,10 +169,14 @@ export function Stage2Controls({
           strongestObjection: values.strongestObjection,
           firstTest: values.firstTest,
           mechanism: values.mechanism,
-          facets: values.facets
-            .split(',')
-            .map((value) => value.trim())
-            .filter(Boolean),
+          ...(values.facets.trim()
+            ? {
+                facets: values.facets
+                  .split(',')
+                  .map((value) => value.trim())
+                  .filter(Boolean),
+              }
+            : {}),
         },
       })
       setNotice('Changes saved.')
