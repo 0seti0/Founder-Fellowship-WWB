@@ -571,10 +571,10 @@ class LiveProvider implements ModelProvider {
       if (!supportsStrictJsonSchema(jsonSchema)) {
         return { type: 'json_object' }
       }
-      const { $schema: _schemaUri, ...providerSchema } = jsonSchema as Record<
-        string,
-        unknown
-      >
+      const providerSchema = {
+        ...(jsonSchema as Record<string, unknown>),
+      }
+      delete providerSchema.$schema
       return {
         type: 'json_schema',
         json_schema: {

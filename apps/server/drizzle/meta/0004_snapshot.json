@@ -36,9 +36,7 @@
       "compositePrimaryKeys": {
         "app_meta_key": {
           "name": "app_meta_key",
-          "columns": [
-            "key"
-          ]
+          "columns": ["key"]
         }
       },
       "uniqueConstraints": {},
@@ -254,25 +252,17 @@
       "indexes": {
         "candidates_run_ordinal_uq": {
           "name": "candidates_run_ordinal_uq",
-          "columns": [
-            "run_id",
-            "ordinal"
-          ],
+          "columns": ["run_id", "ordinal"],
           "isUnique": true
         },
         "candidates_run_model_key_uq": {
           "name": "candidates_run_model_key_uq",
-          "columns": [
-            "run_id",
-            "model_key"
-          ],
+          "columns": ["run_id", "model_key"],
           "isUnique": true
         },
         "candidates_project_id_idx": {
           "name": "candidates_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -281,12 +271,8 @@
           "name": "candidates_project_id_projects_id_fk",
           "tableFrom": "candidates",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -294,12 +280,8 @@
           "name": "candidates_run_id_generation_runs_id_fk",
           "tableFrom": "candidates",
           "tableTo": "generation_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -307,12 +289,8 @@
           "name": "candidates_node_id_nodes_id_fk",
           "tableFrom": "candidates",
           "tableTo": "nodes",
-          "columnsFrom": [
-            "node_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["node_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -320,9 +298,7 @@
       "compositePrimaryKeys": {
         "candidates_id": {
           "name": "candidates_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},
@@ -378,17 +354,12 @@
       "indexes": {
         "edges_parent_child_uq": {
           "name": "edges_parent_child_uq",
-          "columns": [
-            "parent_id",
-            "child_id"
-          ],
+          "columns": ["parent_id", "child_id"],
           "isUnique": true
         },
         "edges_project_id_idx": {
           "name": "edges_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -397,12 +368,8 @@
           "name": "edges_project_id_projects_id_fk",
           "tableFrom": "edges",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -410,12 +377,8 @@
           "name": "edges_parent_id_nodes_id_fk",
           "tableFrom": "edges",
           "tableTo": "nodes",
-          "columnsFrom": [
-            "parent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["parent_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -423,12 +386,8 @@
           "name": "edges_child_id_nodes_id_fk",
           "tableFrom": "edges",
           "tableTo": "nodes",
-          "columnsFrom": [
-            "child_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["child_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -436,12 +395,8 @@
           "name": "edges_run_id_generation_runs_id_fk",
           "tableFrom": "edges",
           "tableTo": "generation_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -449,9 +404,7 @@
       "compositePrimaryKeys": {
         "edges_id": {
           "name": "edges_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},
@@ -528,17 +481,12 @@
       "indexes": {
         "events_project_id_seq_idx": {
           "name": "events_project_id_seq_idx",
-          "columns": [
-            "project_id",
-            "seq"
-          ],
+          "columns": ["project_id", "seq"],
           "isUnique": false
         },
         "events_run_id_idx": {
           "name": "events_run_id_idx",
-          "columns": [
-            "run_id"
-          ],
+          "columns": ["run_id"],
           "isUnique": false
         }
       },
@@ -547,12 +495,8 @@
           "name": "events_project_id_projects_id_fk",
           "tableFrom": "events",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -560,12 +504,8 @@
           "name": "events_run_id_generation_runs_id_fk",
           "tableFrom": "events",
           "tableTo": "generation_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -573,12 +513,8 @@
           "name": "events_node_id_nodes_id_fk",
           "tableFrom": "events",
           "tableTo": "nodes",
-          "columnsFrom": [
-            "node_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["node_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -586,23 +522,17 @@
       "compositePrimaryKeys": {
         "events_seq": {
           "name": "events_seq",
-          "columns": [
-            "seq"
-          ]
+          "columns": ["seq"]
         }
       },
       "uniqueConstraints": {
         "events_id_unique": {
           "name": "events_id_unique",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         },
         "events_dedupe_key_unique": {
           "name": "events_dedupe_key_unique",
-          "columns": [
-            "dedupe_key"
-          ]
+          "columns": ["dedupe_key"]
         }
       },
       "checkConstraint": {}
@@ -776,9 +706,7 @@
       "indexes": {
         "generation_runs_project_id_idx": {
           "name": "generation_runs_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -787,12 +715,8 @@
           "name": "generation_runs_project_id_projects_id_fk",
           "tableFrom": "generation_runs",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -800,9 +724,7 @@
       "compositePrimaryKeys": {
         "generation_runs_id": {
           "name": "generation_runs_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},
@@ -885,16 +807,12 @@
       "indexes": {
         "hypotheses_candidate_id_uq": {
           "name": "hypotheses_candidate_id_uq",
-          "columns": [
-            "candidate_id"
-          ],
+          "columns": ["candidate_id"],
           "isUnique": true
         },
         "hypotheses_project_id_idx": {
           "name": "hypotheses_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -903,12 +821,8 @@
           "name": "hypotheses_project_id_projects_id_fk",
           "tableFrom": "hypotheses",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -916,12 +830,8 @@
           "name": "hypotheses_run_id_generation_runs_id_fk",
           "tableFrom": "hypotheses",
           "tableTo": "generation_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -929,12 +839,8 @@
           "name": "hypotheses_candidate_id_candidates_id_fk",
           "tableFrom": "hypotheses",
           "tableTo": "candidates",
-          "columnsFrom": [
-            "candidate_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["candidate_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -942,9 +848,7 @@
       "compositePrimaryKeys": {
         "hypotheses_id": {
           "name": "hypotheses_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},
@@ -1067,9 +971,7 @@
       "indexes": {
         "nodes_project_id_idx": {
           "name": "nodes_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -1078,12 +980,8 @@
           "name": "nodes_project_id_projects_id_fk",
           "tableFrom": "nodes",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1091,12 +989,8 @@
           "name": "nodes_run_id_generation_runs_id_fk",
           "tableFrom": "nodes",
           "tableTo": "generation_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1104,17 +998,13 @@
       "compositePrimaryKeys": {
         "nodes_id": {
           "name": "nodes_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {
         "nodes_candidate_id_unique": {
           "name": "nodes_candidate_id_unique",
-          "columns": [
-            "candidate_id"
-          ]
+          "columns": ["candidate_id"]
         }
       },
       "checkConstraint": {}
@@ -1173,9 +1063,7 @@
       "compositePrimaryKeys": {
         "projects_id": {
           "name": "projects_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},
@@ -1224,9 +1112,7 @@
       "indexes": {
         "prompt_analyses_project_id_idx": {
           "name": "prompt_analyses_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -1235,12 +1121,8 @@
           "name": "prompt_analyses_project_id_projects_id_fk",
           "tableFrom": "prompt_analyses",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1248,12 +1130,8 @@
           "name": "prompt_analyses_run_id_generation_runs_id_fk",
           "tableFrom": "prompt_analyses",
           "tableTo": "generation_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1261,9 +1139,7 @@
       "compositePrimaryKeys": {
         "prompt_analyses_id": {
           "name": "prompt_analyses_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},
@@ -1353,17 +1229,12 @@
       "indexes": {
         "prompt_items_analysis_ref_uq": {
           "name": "prompt_items_analysis_ref_uq",
-          "columns": [
-            "analysis_id",
-            "ref"
-          ],
+          "columns": ["analysis_id", "ref"],
           "isUnique": true
         },
         "prompt_items_project_id_idx": {
           "name": "prompt_items_project_id_idx",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         }
       },
@@ -1372,12 +1243,8 @@
           "name": "prompt_items_analysis_id_prompt_analyses_id_fk",
           "tableFrom": "prompt_items",
           "tableTo": "prompt_analyses",
-          "columnsFrom": [
-            "analysis_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["analysis_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1385,12 +1252,8 @@
           "name": "prompt_items_project_id_projects_id_fk",
           "tableFrom": "prompt_items",
           "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["project_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1398,9 +1261,7 @@
       "compositePrimaryKeys": {
         "prompt_items_id": {
           "name": "prompt_items_id",
-          "columns": [
-            "id"
-          ]
+          "columns": ["id"]
         }
       },
       "uniqueConstraints": {},

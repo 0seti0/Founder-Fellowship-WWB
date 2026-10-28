@@ -2,7 +2,9 @@ import { expect, test, type Locator } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const evidenceDirectory = resolve('e2e-evidence')
+const evidenceDirectory = resolve(
+  process.env.E2E_EVIDENCE_DIR ?? 'e2e-evidence',
+)
 
 test.beforeAll(() => {
   mkdirSync(evidenceDirectory, { recursive: true })
@@ -14,7 +16,7 @@ test('creates, inspects, and restores a prompt graph', async ({
   await page.setViewportSize(
     testInfo.project.name === 'mobile'
       ? { width: 375, height: 812 }
-      : { width: 1280, height: 800 },
+      : { width: 1440, height: 900 },
   )
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Unfold' })).toBeVisible()
@@ -58,6 +60,9 @@ test('creates, inspects, and restores a prompt graph', async ({
     const inspector = page.getByTestId('inspector-panel')
     await expect(inspector).toBeVisible()
     await expectInspectorSections(inspector)
+    await expect(
+      inspector.getByRole('heading', { name: 'Facets' }),
+    ).toHaveCount(0)
     await expect
       .poll(() => graphNodesOutsideCanvas(graphCanvas, graphNodes))
       .toEqual([])
@@ -70,8 +75,25 @@ test('creates, inspects, and restores a prompt graph', async ({
     await expect(graphNodes).toHaveCount(5, { timeout: 30_000 })
     await expect(page.getByTestId('inspector-panel')).toBeVisible()
     await expectInspectorSections(page.getByTestId('inspector-panel'))
+    await expect(
+      page.getByTestId('inspector-panel').getByRole('heading', {
+        name: 'Facets',
+      }),
+    ).toHaveCount(0)
     await page.screenshot({
       path: resolve(evidenceDirectory, 'desktop-after-reload.png'),
+      fullPage: true,
+    })
+    const countBeforeExpansion = await graphNodes.count()
+    await page.getByRole('button', { name: /^Ground/i }).click()
+    await expect(
+      page.getByRole('status').filter({ hasText: 'New directions added.' }),
+    ).toBeVisible()
+    await expect
+      .poll(() => graphNodes.count())
+      .toBeGreaterThan(countBeforeExpansion)
+    await page.screenshot({
+      path: resolve(evidenceDirectory, 'desktop-after-expansion.png'),
       fullPage: true,
     })
   }
@@ -149,7 +171,6 @@ async function expectInspectorSections(inspector: Locator) {
     'Strongest objection',
     'First test',
     'Mechanism',
-    'Facets',
     'Hypothesis — not confirmed intent',
     'Constraint uncertainty',
   ]) {

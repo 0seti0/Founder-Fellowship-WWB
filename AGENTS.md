@@ -18,6 +18,8 @@ The persisted typed idea DAG is authoritative. Models propose schema-validated
 candidates; the backend checks deterministic preconditions and applies selected
 proposals through restricted transactional graph patches.
 
+See `docs/POSSIBILITY_ENGINE_SPEC.md` for the implemented pipeline and policy details.
+
 ### Extraction & hypotheses
 
 Exact evidence-span containment applies only to explicitly extracted facts and
@@ -43,8 +45,8 @@ and expand are steering actions, not operators.
 Quality floors combine deterministic completeness and hard-constraint checks
 with structured semantic evaluation of intent alignment, usefulness, and
 specificity. Hard filtering is deterministic; unknown constraint status is not a
-violation. Selection uses near-deduplication and soft facet coverage without
-rigid diversity quotas.
+violation. Selection uses near-deduplication and a quality-minus-redundancy
+penalty, without facet-coverage bonuses or rigid diversity quotas.
 
 ### Logging
 

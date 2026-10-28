@@ -274,10 +274,18 @@ export const RubricQualitySchema = z
     rubricVersion: z.literal('candidate-rubric-v2'),
     criteria: z
       .object({
-        intentCompatibility: RubricCriterionSchema.extend({ weight: z.number() }),
-        decisionUsefulness: RubricCriterionSchema.extend({ weight: z.number() }),
-        specificityCoherence: RubricCriterionSchema.extend({ weight: z.number() }),
-        firstTestExecutability: RubricCriterionSchema.extend({ weight: z.number() }),
+        intentCompatibility: RubricCriterionSchema.extend({
+          weight: z.number(),
+        }),
+        decisionUsefulness: RubricCriterionSchema.extend({
+          weight: z.number(),
+        }),
+        specificityCoherence: RubricCriterionSchema.extend({
+          weight: z.number(),
+        }),
+        firstTestExecutability: RubricCriterionSchema.extend({
+          weight: z.number(),
+        }),
         nonObviousness: RubricCriterionSchema.extend({ weight: z.number() }),
       })
       .strict(),
@@ -457,9 +465,7 @@ export type ExpandOutput = z.infer<typeof ExpandOutputSchema>
 export type EditableIdeaFields = z.infer<typeof EditableIdeaFieldsSchema>
 export type CandidateEvaluation = z.infer<typeof CandidateEvaluationSchema>
 export type EvaluateOutput = z.infer<typeof EvaluateOutputSchema>
-export type CandidateEvaluationV2 = z.infer<
-  typeof CandidateEvaluationV2Schema
->
+export type CandidateEvaluationV2 = z.infer<typeof CandidateEvaluationV2Schema>
 export type EvaluateOutputV2 = z.infer<typeof EvaluateOutputV2Schema>
 export type CandidateQuality = z.infer<typeof CandidateQualitySchema>
 export type ProjectDto = z.infer<typeof ProjectSchema>

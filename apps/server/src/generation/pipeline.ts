@@ -1,5 +1,4 @@
 import {
-  CandidateEvaluationV2Schema,
   EvaluateOutputV2Schema,
   ExpandOutputSchema,
   ExtractionOutputSchema,
@@ -1201,10 +1200,6 @@ export function selectCandidates(
       }
     }
   }
-}
-
-function normalize(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
 function deterministicExplorationString(seed: string, index: number) {
