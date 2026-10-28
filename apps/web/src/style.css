@@ -858,7 +858,7 @@ input:focus-visible {
 
 .operator-options {
   border-radius: 22px;
-  padding: 0.25rem 0;
+  padding: 0.25rem 0.35rem;
 }
 
 .operator-option {
