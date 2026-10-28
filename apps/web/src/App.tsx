@@ -28,8 +28,10 @@ import {
 } from 'react'
 import '@xyflow/react/dist/style.css'
 import { layoutWithPreservedPositions } from './lib/layout'
+import { buildPresenterScript } from './lib/presenterScript'
 import { buildRenderedGraph } from './lib/renderedGraph'
 import { trpcClient } from './lib/trpc'
+import { Presenter } from './components/Presenter'
 import { Stage2Controls } from './components/Stage2Controls'
 
 type GraphNodeData = {
@@ -100,6 +102,16 @@ export function App() {
     retry: false,
   })
   const projectData = projectQuery.data
+  const [presenting, setPresenting] = useState(false)
+  const presentButtonRef = useRef<HTMLButtonElement>(null)
+  const presenterScript = useMemo(
+    () => (projectData ? buildPresenterScript(projectData) : null),
+    [projectData],
+  )
+  const closePresenter = useCallback(() => {
+    setPresenting(false)
+    requestAnimationFrame(() => presentButtonRef.current?.focus())
+  }, [])
   const renderedGraph = useMemo(
     () =>
       buildRenderedGraph(
@@ -552,6 +564,18 @@ export function App() {
                     directions
                   </p>
                 )}
+                {presenterScript && (
+                  <button
+                    ref={presentButtonRef}
+                    type="button"
+                    className="present-button"
+                    data-testid="present-button"
+                    onClick={() => setPresenting(true)}
+                  >
+                    <span aria-hidden="true" />
+                    Watch it think
+                  </button>
+                )}
                 <button
                   type="button"
                   className="secondary-button reveal-toggle"
@@ -618,7 +642,7 @@ export function App() {
                   minZoom={0.2}
                   proOptions={{ hideAttribution: true }}
                 >
-                  <Background color="#e5e1d7" gap={24} size={1} />
+                  <Background color="#b9c1cd" gap={24} size={1.2} />
                   <Controls showInteractive={false} />
                 </ReactFlow>
               </div>
@@ -640,6 +664,9 @@ export function App() {
           )}
         </section>
       </div>
+      {presenting && presenterScript && (
+        <Presenter script={presenterScript} onClose={closePresenter} />
+      )}
     </main>
   )
 }
