@@ -19,7 +19,7 @@ evidence, and graph boundaries described in `AGENTS.md` remain in force.
 Every model call in a run receives the same `currentDate` (date, weekday, and
 effective timezone).
 
-1. **Extract.** `extract-v2` returns explicit facts and constraints. Each
+1. **Extract.** `extract-v3` returns explicit facts and constraints. Each
    evidence span must be an exact contiguous substring of the original prompt.
    Inferred goal hypotheses are not treated as evidence.
 2. **Frame.** The default `JOINT_AXIS_FREE_V1` strategy generates a joint set

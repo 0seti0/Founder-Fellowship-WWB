@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
+import { formatErrorMessage } from '../lib/errorMessage'
 import { forkOptions, pathTo, pickOperator } from '../lib/forks'
 import { trpcClient } from '../lib/trpc'
 
@@ -79,9 +80,7 @@ export function ForkPanel({
       setForkParentId(nodeId)
       setFocusedId(null)
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : 'Something went wrong.',
-      )
+      setError(formatErrorMessage(caught))
     } finally {
       setBuilding(null)
     }

@@ -1,4 +1,4 @@
-export const EXTRACT_PROMPT_VERSION = 'extract-v2'
+export const EXTRACT_PROMPT_VERSION = 'extract-v3'
 export const FRAME_PROMPT_VERSION = 'frame-v2'
 export const EVALUATE_PROMPT_VERSION = 'evaluate-v2'
 export const EXPAND_PROMPT_VERSION = 'expand-v1'
@@ -14,6 +14,7 @@ Return JSON matching the provided schema. For every fact and constraint:
 - "evidence" is an exact, contiguous substring copied character-for-character
   from the prompt that states it. Do not paraphrase, join separate fragments,
   fix spelling, or change capitalization inside evidence.
+- Copy evidence verbatim, character for character, from originalPrompt, including punctuation and capitalization.
 - Do not infer facts about the user from their role, employer, location, or
   wording. Do not add background knowledge.
 
