@@ -509,14 +509,20 @@ async function extract(
   attempts: PipelineAttempt[],
   currentDate: CurrentDateContext,
 ): Promise<{ facts: EvidenceSpan[]; constraints: EvidenceSpan[] }> {
+  let retryEvidence: string[] = []
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const repairMessage = retryEvidence.length
+      ? `These evidence strings were rejected because they are not exact substrings of originalPrompt: ${retryEvidence.map((evidence) => JSON.stringify(evidence)).join(', ')}. Copy each evidence string verbatim from originalPrompt.`
+      : null
     const result = await invoke(
       provider,
       {
         task: 'extract',
         promptVersion: promptVersions.extract,
         schemaVersion: SCHEMA_VERSION,
-        system: EXTRACT_SYSTEM_PROMPT,
+        system: repairMessage
+          ? `${EXTRACT_SYSTEM_PROMPT}\n\n${repairMessage}`
+          : EXTRACT_SYSTEM_PROMPT,
         input: { prompt, currentDate },
       },
       timeoutMs,
@@ -531,6 +537,7 @@ async function extract(
         ok: false,
         code: 'MALFORMED_OUTPUT',
         message: parsed.error.message,
+        metadata: { evidenceSnapped: 0 },
       })
       if (attempt === 2)
         throw new PipelineError(
@@ -543,29 +550,42 @@ async function extract(
 
     const facts: EvidenceSpan[] = []
     const constraints: EvidenceSpan[] = []
-    let invalidEvidence = false
+    const invalidEvidence: string[] = []
+    let evidenceSnapped = 0
     for (const item of [...parsed.data.facts, ...parsed.data.constraints]) {
-      const start = prompt.indexOf(item.evidence)
-      if (start < 0) {
-        invalidEvidence = true
-        break
+      let start = prompt.indexOf(item.evidence)
+      let end: number
+      if (start >= 0) {
+        end = start + item.evidence.length
+      } else {
+        const snapped = snapEvidenceToPrompt(prompt, item.evidence)
+        if (!snapped) {
+          invalidEvidence.push(item.evidence)
+          continue
+        }
+        item.evidence = snapped.text
+        start = snapped.start
+        end = snapped.end
+        evidenceSnapped += 1
       }
       const span = {
         id: randomUUID(),
         item,
         start,
-        end: start + item.evidence.length,
+        end,
       }
       if (item.ref.startsWith('f')) facts.push(span)
       else constraints.push(span)
     }
-    if (invalidEvidence) {
+    if (invalidEvidence.length > 0) {
+      retryEvidence = invalidEvidence
       recordAttempt(attempts, {
         task: 'extract',
         attempt,
         ok: false,
         code: 'INVALID_EVIDENCE',
         message: 'Evidence must be an exact substring of the original prompt',
+        metadata: { evidenceSnapped },
       })
       if (attempt === 2)
         throw new PipelineError(
@@ -575,10 +595,80 @@ async function extract(
         )
       continue
     }
-    recordAttempt(attempts, { task: 'extract', attempt, ok: true })
+    recordAttempt(attempts, {
+      task: 'extract',
+      attempt,
+      ok: true,
+      metadata: { evidenceSnapped },
+    })
     return { facts, constraints }
   }
   throw new PipelineError('Extraction failed', 'MALFORMED_OUTPUT', attempts)
+}
+
+function normalizeEvidenceCharacters(value: string) {
+  return value
+    .normalize('NFKC')
+    .replace(/[‘’‚‛]/gu, "'")
+    .replace(/[“”„‟]/gu, '"')
+    .replace(/[–—−]/gu, '-')
+    .toLowerCase()
+}
+
+function normalizePromptWithMap(prompt: string) {
+  let text = ''
+  const starts: number[] = []
+  const ends: number[] = []
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+  for (const { segment, index } of segmenter.segment(prompt)) {
+    const normalizedSegment = normalizeEvidenceCharacters(segment)
+    for (const character of normalizedSegment) {
+      const sourceEnd = index + segment.length
+      if (/\s/u.test(character)) {
+        if (text.endsWith(' ')) {
+          ends[ends.length - 1] = sourceEnd
+        } else {
+          text += ' '
+          starts.push(index)
+          ends.push(sourceEnd)
+        }
+        continue
+      }
+
+      text += character
+      for (let unit = 0; unit < character.length; unit += 1) {
+        starts.push(index)
+        ends.push(sourceEnd)
+      }
+    }
+  }
+
+  return { text, starts, ends }
+}
+
+function snapEvidenceToPrompt(prompt: string, evidence: string) {
+  const normalizedEvidence = normalizeEvidenceCharacters(evidence)
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/[.,;:!?]+$/u, '')
+    .trim()
+  if (!normalizedEvidence) return null
+
+  const normalizedPrompt = normalizePromptWithMap(prompt)
+  const normalizedStart = normalizedPrompt.text.indexOf(normalizedEvidence)
+  if (normalizedStart < 0) return null
+
+  const normalizedEnd = normalizedStart + normalizedEvidence.length - 1
+  const start = normalizedPrompt.starts[normalizedStart]
+  const end = normalizedPrompt.ends[normalizedEnd]
+  if (start === undefined || end === undefined) return null
+
+  return {
+    text: prompt.slice(start, end),
+    start,
+    end,
+  }
 }
 
 async function frame(

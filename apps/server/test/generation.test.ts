@@ -53,6 +53,27 @@ function providerWithMalformedFrames(malformedAttempts: number) {
   return { provider, frameRequests }
 }
 
+function providerWithExtractionEvidence(evidence: string) {
+  const mock = createModelProvider({ MODEL_MODE: 'mock' })
+  const extractRequests: Parameters<ModelProvider['generateStructured']>[0][] =
+    []
+  const provider: ModelProvider = {
+    identity: mock.identity,
+    async generateStructured(request) {
+      if (request.task === 'extract') {
+        extractRequests.push(request)
+        return {
+          facts: [{ ref: 'f1', text: 'A stated bakery idea.', evidence }],
+          constraints: [],
+        }
+      }
+      return mock.generateStructured(request)
+    },
+    embed: (texts, signal) => mock.embed(texts, signal),
+  }
+  return { provider, extractRequests }
+}
+
 const contactTerms =
   /\b(?:contact|interview|ask|invite|survey|call|email|message|talk|meet|reach(?:\s+out)?)(?:s|ed|ing)?\b/i
 
@@ -279,7 +300,103 @@ describe('initial generation pipeline', () => {
     for (const span of result.facts) {
       expect(prompt.slice(span.start, span.end)).toBe(span.item.evidence)
     }
+    expect(
+      result.attempts.find((attempt) => attempt.task === 'extract')?.metadata,
+    ).toMatchObject({ evidenceSnapped: 0 })
     expect(result.candidates).toHaveLength(6)
+  })
+
+  it.each([
+    [
+      'curly apostrophe',
+      'I’m starting a bakery for neighbors.',
+      "I'm starting a bakery",
+      'I’m starting a bakery',
+    ],
+    [
+      'em dash',
+      'A bakery — for neighbors.',
+      'A bakery - for neighbors',
+      'A bakery — for neighbors',
+    ],
+    [
+      'newline versus space',
+      'I want to open a bakery\nfor neighbors.',
+      'I want to open a bakery for neighbors',
+      'I want to open a bakery\nfor neighbors',
+    ],
+    [
+      'nonbreaking space',
+      'A bakery\u00a0for neighbors.',
+      'A bakery for neighbors',
+      'A bakery\u00a0for neighbors',
+    ],
+    [
+      'case difference',
+      'I WANT TO OPEN A BAKERY FOR NEIGHBORS.',
+      'i want to open a bakery for neighbors',
+      'I WANT TO OPEN A BAKERY FOR NEIGHBORS',
+    ],
+    [
+      'trailing period',
+      'A bakery trial for neighbors!',
+      'A bakery trial for neighbors.',
+      'A bakery trial for neighbors',
+    ],
+  ])(
+    'snaps %s evidence to its exact prompt span',
+    async (_difference, testPrompt, evidence, expectedEvidence) => {
+      const { provider, extractRequests } =
+        providerWithExtractionEvidence(evidence)
+      const result = await generatePipeline({
+        prompt: testPrompt,
+        provider,
+        timeoutMs,
+      })
+      const span = result.facts[0]!
+
+      expect(span.item.evidence).toBe(expectedEvidence)
+      expect(testPrompt.slice(span.start, span.end)).toBe(expectedEvidence)
+      expect(span.start).toBe(testPrompt.indexOf(expectedEvidence))
+      expect(
+        result.attempts.find((attempt) => attempt.task === 'extract')?.metadata,
+      ).toMatchObject({ evidenceSnapped: 1 })
+      expect(extractRequests[0]?.system).toContain(
+        'Copy evidence verbatim, character for character, from originalPrompt, including punctuation and capitalization.',
+      )
+    },
+  )
+
+  it('rejects unmatched evidence and quotes it in the repair request', async () => {
+    const evidence = 'A detail that is not in the prompt.'
+    const { provider, extractRequests } =
+      providerWithExtractionEvidence(evidence)
+    const error = await generatePipeline({
+      prompt: 'I want to open a bakery for neighbors.',
+      provider,
+      timeoutMs,
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(PipelineError)
+    expect((error as PipelineError).code).toBe('INVALID_EVIDENCE')
+    const extractAttempts = (error as PipelineError).attempts.filter(
+      (attempt) => attempt.task === 'extract',
+    )
+    expect(extractAttempts).toHaveLength(2)
+    expect(
+      extractAttempts.map(
+        ({ attempt, ok, code, metadata }) =>
+          [attempt, ok, code, metadata?.evidenceSnapped] as const,
+      ),
+    ).toEqual([
+      [1, false, 'INVALID_EVIDENCE', 0],
+      [2, false, 'INVALID_EVIDENCE', 0],
+    ])
+    expect(extractRequests).toHaveLength(2)
+    expect(extractRequests[1]?.system).toContain(JSON.stringify(evidence))
+    expect(JSON.stringify((error as PipelineError).attempts)).not.toContain(
+      evidence,
+    )
   })
 
   it('uses clean noun-phrase subjects and distinct candidate prose', async () => {
@@ -1171,7 +1288,7 @@ describe('initial generation pipeline', () => {
     await expect(
       provider.generateStructured({
         task: 'extract',
-        promptVersion: 'extract-v2',
+        promptVersion: 'extract-v3',
         schemaVersion: 'stage1-v1',
         system: '',
         input: { prompt },

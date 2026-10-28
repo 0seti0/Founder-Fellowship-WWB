@@ -206,7 +206,7 @@ describe('MySQL integration', () => {
       generationStrategy: 'JOINT_AXIS_FREE_V1',
       rubricVersion: 'candidate-rubric-v2',
       promptVersions: {
-        extract: 'extract-v2',
+        extract: 'extract-v3',
         frame: 'frame-axis-free-v2',
         evaluate: 'evaluate-rubric-v3',
       },
