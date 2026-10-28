@@ -54,7 +54,7 @@ describe('environment configuration', () => {
     expect(parsed.LLM_MODEL_STRONG).toBe('gpt-4.1')
     expect(parsed.LLM_MODEL_FAST).toBe('gpt-4.1-mini')
     expect(parsed.LLM_EMBEDDING_MODEL).toBe('text-embedding-3-small')
-    expect(parsed.LLM_MAX_TOKENS).toBe(4096)
+    expect(parsed.LLM_MAX_TOKENS).toBe(16_000)
     expect(parseEnv({ LLM_TEMPERATURE: '0.3' }).LLM_TEMPERATURE).toBe(0.3)
     expect(() => parseEnv({ LLM_TEMPERATURE: '3' })).toThrow()
   })
@@ -72,7 +72,7 @@ describe('environment configuration', () => {
     expect(parsed.LLM_BASE_URL).toBe('https://api.anthropic.com/v1')
     expect(parsed.LLM_MODEL_STRONG).toBe('claude-sonnet-4-5')
     expect(parsed.LLM_MODEL_FAST).toBe('claude-haiku-4-5')
-    expect(parsed.LLM_MAX_TOKENS).toBe(4096)
+    expect(parsed.LLM_MAX_TOKENS).toBe(16_000)
     expect(parsed.LLM_TEMPERATURE).toBeUndefined()
     expect(
       parseEnv({ LLM_PROVIDER: 'anthropic', LLM_MAX_TOKENS: '2048' })
