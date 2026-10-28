@@ -24,6 +24,7 @@ export async function compareCandidates(
   const { timeoutMs = 30_000, originalPrompt, left, right, constraints } = input
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const signal = AbortSignal.timeout(timeoutMs)
+    let usage: Record<string, number> | undefined
     let result: unknown
     try {
       result = await provider.generateStructured({
@@ -38,6 +39,9 @@ export async function compareCandidates(
           right,
         },
         signal,
+        onUsage: (value) => {
+          usage = value
+        },
       })
     } catch (error) {
       const providerError =
@@ -57,6 +61,7 @@ export async function compareCandidates(
         ok: false,
         code: providerError.code,
         message: providerError.message,
+        ...(usage ? { metadata: { usage } } : {}),
       })
       throw new PipelineError(
         providerError.message,
@@ -73,6 +78,7 @@ export async function compareCandidates(
         ok: false,
         code: 'MALFORMED_OUTPUT',
         message: parsed.error.message,
+        ...(usage ? { metadata: { usage } } : {}),
       })
       if (attempt === 2) {
         throw new PipelineError(
@@ -84,7 +90,12 @@ export async function compareCandidates(
       continue
     }
 
-    attempts.push({ task: 'compare', attempt, ok: true })
+    attempts.push({
+      task: 'compare',
+      attempt,
+      ok: true,
+      ...(usage ? { metadata: { usage } } : {}),
+    })
     return { ...parsed.data, attempts }
   }
   throw new PipelineError(

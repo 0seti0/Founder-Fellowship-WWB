@@ -192,8 +192,7 @@ export function calculateQ(evaluation: CandidateEvaluationV2) {
   return Object.entries(RUBRIC_WEIGHTS).reduce(
     (sum, [criterion, weight]) =>
       sum +
-      weight *
-        (evaluation[criterion as keyof typeof RUBRIC_WEIGHTS].score / 2),
+      weight * (evaluation[criterion as keyof typeof RUBRIC_WEIGHTS].score / 2),
     0,
   )
 }
@@ -291,10 +290,10 @@ export async function expandPipeline(options: {
       }
     }
     if (content) {
-      attempts.push({ task: 'expand', attempt, ok: true })
+      recordAttempt(attempts, { task: 'expand', attempt, ok: true })
       break
     }
-    attempts.push({
+    recordAttempt(attempts, {
       task: 'expand',
       attempt,
       ok: false,
@@ -366,7 +365,7 @@ async function extract(
     )
     const parsed = ExtractionOutputSchema.safeParse(result)
     if (!parsed.success) {
-      attempts.push({
+      recordAttempt(attempts, {
         task: 'extract',
         attempt,
         ok: false,
@@ -401,7 +400,7 @@ async function extract(
       else constraints.push(span)
     }
     if (invalidEvidence) {
-      attempts.push({
+      recordAttempt(attempts, {
         task: 'extract',
         attempt,
         ok: false,
@@ -416,7 +415,7 @@ async function extract(
         )
       continue
     }
-    attempts.push({ task: 'extract', attempt, ok: true })
+    recordAttempt(attempts, { task: 'extract', attempt, ok: true })
     return { facts, constraints }
   }
   throw new PipelineError('Extraction failed', 'MALFORMED_OUTPUT', attempts)
@@ -436,8 +435,8 @@ async function frame(
   metadata: Record<string, unknown>
   rejectionReasons: Map<string, string[]>
 }> {
-  const independent = strategy !== 'JOINT_AXIS_V1' &&
-    strategy !== 'JOINT_AXIS_FREE_V1'
+  const independent =
+    strategy !== 'JOINT_AXIS_V1' && strategy !== 'JOINT_AXIS_FREE_V1'
   const candidates: FrameCandidate[] = []
   const metadata: Record<string, unknown> = {
     strategy,
@@ -471,7 +470,7 @@ async function frame(
     )
     const parsed = FrameOutputSchema.safeParse(result)
     if (!parsed.success) {
-      attempts.push({
+      recordAttempt(attempts, {
         task: 'frame',
         attempt: 1,
         ok: false,
@@ -485,7 +484,7 @@ async function frame(
       )
     }
     candidates.push(...parsed.data.candidates)
-    attempts.push({
+    recordAttempt(attempts, {
       task: 'frame',
       attempt: 1,
       ok: true,
@@ -493,8 +492,7 @@ async function frame(
       metadata: {
         index: 0,
         promptVersion,
-        system:
-          axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
+        system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
         instructionVariant: null,
       },
     })
@@ -569,7 +567,7 @@ async function frame(
             ? SsotOutputSchema.safeParse(result)
             : FrameSingleOutputSchema.safeParse(result)
         if (!parsed.success) {
-          attempts.push({
+          recordAttempt(attempts, {
             task: 'frame',
             attempt,
             ok: false,
@@ -609,7 +607,7 @@ async function frame(
             )
           continue
         }
-        attempts.push({
+        recordAttempt(attempts, {
           task: 'frame',
           attempt,
           ok: true,
@@ -632,8 +630,7 @@ async function frame(
       const leaked = seedStrings.some(
         (seed) => seed.length >= 6 && containsSeed(candidate!, seed),
       )
-      if (leaked)
-        rejectionReasons.set(candidate.key, ['SEED_LEAK'])
+      if (leaked) rejectionReasons.set(candidate.key, ['SEED_LEAK'])
       if (seedStrings.length) stripSeeds(candidate, seedStrings)
       candidates.push(candidate)
     }
@@ -700,7 +697,7 @@ async function evaluateV2(
         )
       : null
     if (!parsed.success || coverageError) {
-      attempts.push({
+      recordAttempt(attempts, {
         task: 'evaluate',
         attempt,
         ok: false,
@@ -715,7 +712,7 @@ async function evaluateV2(
         )
       continue
     }
-    attempts.push({
+    recordAttempt(attempts, {
       task: 'evaluate',
       attempt,
       ok: true,
@@ -857,9 +854,10 @@ async function completePipeline({
         content,
         evaluation,
         generationMeta:
-          (generationMeta.candidateMetadata as
-            | Record<string, Record<string, unknown>>
-            | undefined)?.[content.key] ?? null,
+          (
+            generationMeta.candidateMetadata as
+              Record<string, Record<string, unknown>> | undefined
+          )?.[content.key] ?? null,
         qualityScore,
         completeness,
         genericFirstTest,
@@ -1225,7 +1223,8 @@ function randomExplorationString() {
 function containsSeed(value: unknown, seed: string): boolean {
   if (typeof value === 'string')
     return value.toLowerCase().includes(seed.toLowerCase())
-  if (Array.isArray(value)) return value.some((item) => containsSeed(item, seed))
+  if (Array.isArray(value))
+    return value.some((item) => containsSeed(item, seed))
   if (value && typeof value === 'object')
     return Object.values(value).some((item) => containsSeed(item, seed))
   return false
@@ -1323,6 +1322,28 @@ function textJaccard(left: string, right: string) {
   return union ? intersection / union : 1
 }
 
+function recordAttempt(attempts: PipelineAttempt[], attempt: PipelineAttempt) {
+  const previous = attempts.at(-1)
+  if (
+    previous &&
+    previous.task === attempt.task &&
+    previous.attempt === attempt.attempt &&
+    (previous.metadata?.pendingProviderAttempt === true ||
+      previous.ok === false)
+  ) {
+    Object.assign(previous, attempt, {
+      metadata: {
+        ...previous.metadata,
+        ...attempt.metadata,
+        pendingProviderAttempt: undefined,
+      },
+    })
+    return previous
+  }
+  attempts.push(attempt)
+  return attempt
+}
+
 function invoke(
   provider: ModelProvider,
   request: Omit<StructuredGenerationRequest, 'signal'>,
@@ -1331,8 +1352,23 @@ function invoke(
   attempt: number,
 ) {
   const signal = AbortSignal.timeout(timeoutMs)
+  const recorded = recordAttempt(attempts, {
+    task: request.task,
+    attempt,
+    ok: false,
+    metadata: { pendingProviderAttempt: true },
+  })
   return provider
-    .generateStructured({ ...request, signal })
+    .generateStructured({
+      ...request,
+      signal,
+      onUsage: (usage) => {
+        recorded.metadata = {
+          ...recorded.metadata,
+          usage,
+        }
+      },
+    })
     .catch((error: unknown) => {
       const providerError =
         error instanceof ProviderError
@@ -1345,12 +1381,13 @@ function invoke(
                   : 'Model provider failed',
                 'PROVIDER_ERROR',
               )
-      attempts.push({
+      recordAttempt(attempts, {
         task: request.task,
         attempt,
         ok: false,
         code: providerError.code,
         message: providerError.message,
+        metadata: recorded.metadata,
       })
       throw new PipelineError(
         providerError.message,

@@ -20,8 +20,15 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The web app runs at <http://localhost:5173> and the server at <http://localhost:3001>. The current
-generation provider is deterministic mock mode; live model calls are not implemented.
+The web app runs at <http://localhost:5173> and the server at <http://localhost:3001>. Mock mode is
+the default. To enable OpenAI-compatible live requests, set `MODEL_MODE=live` and the server-only
+`LLM_API_KEY` in `.env`. The provider defaults to `https://api.openai.com/v1`, `gpt-4.1` for
+framing/expansion/evaluation, `gpt-4.1-mini` for extraction/comparison, and
+`text-embedding-3-small` for embeddings. `LLM_BASE_URL`, `LLM_MODEL_STRONG`, `LLM_MODEL_FAST`,
+`LLM_EMBEDDING_MODEL`, and optional `LLM_TEMPERATURE` can be configured there. The deprecated
+`MODEL_API_KEY` variable remains a fallback and emits a one-line warning; it is never logged or
+sent in request bodies. Live-provider failures are returned to the caller and never fall back to
+mock output.
 
 ## Prompt-to-graph
 
@@ -34,8 +41,13 @@ uncertainty. The selected project and node are reflected in the URL and restored
 Mock mode is the default. Its scenario picker supports `default`, `malformed`, `malformed-once`,
 `invalid-evidence`, `invalid-evidence-once`, `paraphrase`, `hard-violation`, `duplicates`,
 `low-quality`, `few-pass`, `none-pass`, `weak-diverse`, `provider-error`, `timeout`, and
-`embedding-failure`. The live provider deliberately reports an error rather than silently falling
-back to mock mode.
+`embedding-failure`.
+
+Run the development-only generation experiment harness with
+`pnpm --filter @unfold/server experiment --`. It defaults to all six strategies and 20 synthetic
+fixtures in mock mode; outputs go to the gitignored `apps/server/experiments/out/` directory.
+Mock results exercise the pipeline and do not establish candidate quality. See
+`apps/server/experiments/README.md`.
 
 Candidate deduplication uses embedding cosine similarity at `≥ 0.92`. If embeddings fail, the
 pipeline falls back to normalized token-set Jaccard similarity at `≥ 0.8`; this is recorded as

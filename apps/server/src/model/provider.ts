@@ -9,7 +9,18 @@ import type {
   MockScenario,
   UnaryOperator,
 } from '@unfold/shared'
+import {
+  EvaluateOutputV2Schema,
+  ExpandOutputSchema,
+  ExtractionOutputSchema,
+  FrameOutputSchema,
+  FrameSingleOutputSchema,
+  FunctionalEquivalenceOutputSchema,
+  SsotOutputSchema,
+} from '@unfold/shared'
 import type { ModelMode } from '@unfold/shared'
+import { z } from 'zod'
+import { env as runtimeEnv } from '../env'
 import {
   FRAME_PROMPT_VERSION,
   FRAME_SINGLE_PROMPT_VERSION,
@@ -28,6 +39,7 @@ export type StructuredGenerationRequest = {
   system: string
   input: unknown
   signal: AbortSignal
+  onUsage?: (usage: Record<string, number>) => void
 }
 
 export type ModelProvider = {
@@ -401,30 +413,226 @@ export class ProviderError extends Error {
   }
 }
 
-type ProviderEnvironment = {
+type ProviderEnvironment = Partial<typeof runtimeEnv> & {
   MODEL_MODE: ModelMode
 }
 
 export function createModelProvider(
-  env: ProviderEnvironment,
+  environment: ProviderEnvironment,
   opts: { mockScenario?: MockScenario } = {},
 ): ModelProvider {
-  if (env.MODEL_MODE === 'mock') {
+  if (environment.MODEL_MODE === 'mock') {
     return new MockProvider(opts.mockScenario ?? 'default')
   }
-  return new LiveProvider()
+  return new LiveProvider({ ...runtimeEnv, ...environment })
 }
 
+type LiveConfiguration = Pick<
+  typeof runtimeEnv,
+  | 'LLM_API_KEY'
+  | 'MODEL_API_KEY'
+  | 'LLM_BASE_URL'
+  | 'LLM_MODEL_STRONG'
+  | 'LLM_MODEL_FAST'
+  | 'LLM_EMBEDDING_MODEL'
+  | 'LLM_TEMPERATURE'
+>
+
 class LiveProvider implements ModelProvider {
-  identity = { provider: 'live', model: 'unimplemented' }
+  readonly identity: { provider: string; model: string }
 
-  async generateStructured(): Promise<never> {
-    throw new ProviderError('Live provider not implemented', 'PROVIDER_ERROR')
+  constructor(private readonly configuration: LiveConfiguration) {
+    this.identity = {
+      provider: 'openai-compatible',
+      model: configuration.LLM_MODEL_STRONG,
+    }
   }
 
-  async embed(): Promise<never> {
-    throw new ProviderError('Live provider not implemented', 'PROVIDER_ERROR')
+  async generateStructured(request: StructuredGenerationRequest) {
+    const apiKey =
+      this.configuration.LLM_API_KEY ?? this.configuration.MODEL_API_KEY
+    if (!apiKey) {
+      throw new ProviderError(
+        'LLM_API_KEY is required for live model requests',
+        'PROVIDER_ERROR',
+      )
+    }
+    const model =
+      request.task === 'frame' ||
+      request.task === 'expand' ||
+      request.task === 'evaluate'
+        ? this.configuration.LLM_MODEL_STRONG
+        : this.configuration.LLM_MODEL_FAST
+    const responseFormat = this.responseFormat(request)
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: request.system },
+        { role: 'user', content: JSON.stringify(request.input) },
+      ],
+      ...(this.configuration.LLM_TEMPERATURE === undefined
+        ? {}
+        : { temperature: this.configuration.LLM_TEMPERATURE }),
+      response_format: responseFormat,
+    }
+    const response = await this.requestJson(
+      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: request.signal,
+      },
+      request.signal,
+    )
+    const envelope = response as {
+      choices?: Array<{ message?: { content?: unknown } }>
+      usage?: Record<string, number>
+    }
+    const content = envelope.choices?.[0]?.message?.content
+    if (envelope.usage) request.onUsage?.(envelope.usage)
+    if (typeof content !== 'string') {
+      throw new ProviderError(
+        'OpenAI-compatible provider returned no message content',
+        'PROVIDER_ERROR',
+      )
+    }
+    try {
+      return JSON.parse(content) as unknown
+    } catch {
+      return content
+    }
   }
+
+  async embed(texts: string[], signal: AbortSignal) {
+    const apiKey =
+      this.configuration.LLM_API_KEY ?? this.configuration.MODEL_API_KEY
+    if (!apiKey) {
+      throw new ProviderError(
+        'LLM_API_KEY is required for live model requests',
+        'PROVIDER_ERROR',
+      )
+    }
+    if (texts.length === 0) return []
+    const response = await this.requestJson(
+      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/embeddings`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.configuration.LLM_EMBEDDING_MODEL,
+          input: texts,
+        }),
+        signal,
+      },
+      signal,
+    )
+    const data = (response as { data?: Array<{ embedding?: unknown }> }).data
+    if (
+      !Array.isArray(data) ||
+      data.length !== texts.length ||
+      data.some(
+        (item) =>
+          !Array.isArray(item.embedding) ||
+          item.embedding.some((value) => typeof value !== 'number'),
+      )
+    ) {
+      throw new ProviderError(
+        'OpenAI-compatible provider returned invalid embeddings',
+        'PROVIDER_ERROR',
+      )
+    }
+    return data.map((item) => item.embedding as number[])
+  }
+
+  private responseFormat(request: StructuredGenerationRequest) {
+    const schema =
+      request.task === 'extract'
+        ? ExtractionOutputSchema
+        : request.task === 'frame'
+          ? request.promptVersion === SSOT_PROMPT_VERSION
+            ? SsotOutputSchema
+            : request.promptVersion === FRAME_SINGLE_PROMPT_VERSION
+              ? FrameSingleOutputSchema
+              : FrameOutputSchema
+          : request.task === 'evaluate'
+            ? EvaluateOutputV2Schema
+            : request.task === 'expand'
+              ? ExpandOutputSchema
+              : FunctionalEquivalenceOutputSchema
+    try {
+      const jsonSchema = z.toJSONSchema(schema)
+      if (!supportsStrictJsonSchema(jsonSchema)) {
+        return { type: 'json_object' }
+      }
+      const { $schema: _schemaUri, ...providerSchema } = jsonSchema as Record<
+        string,
+        unknown
+      >
+      return {
+        type: 'json_schema',
+        json_schema: {
+          name: `${request.task}_${request.schemaVersion}`.replace(
+            /[^a-zA-Z0-9_-]/g,
+            '_',
+          ),
+          strict: true,
+          schema: providerSchema,
+        },
+      }
+    } catch {
+      return { type: 'json_object' }
+    }
+  }
+
+  private async requestJson(
+    url: string,
+    init: RequestInit,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    try {
+      const response = await fetch(url, init)
+      if (!response.ok) {
+        throw new ProviderError(
+          `OpenAI-compatible provider returned HTTP ${response.status}`,
+          'PROVIDER_ERROR',
+        )
+      }
+      return await response.json()
+    } catch (error) {
+      if (error instanceof ProviderError) throw error
+      if (
+        signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw new ProviderError('Model request timed out', 'TIMEOUT')
+      }
+      throw new ProviderError(
+        'OpenAI-compatible provider request failed',
+        'PROVIDER_ERROR',
+      )
+    }
+  }
+}
+
+function supportsStrictJsonSchema(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.every(supportsStrictJsonSchema)
+  if (!schema || typeof schema !== 'object') return true
+  const record = schema as Record<string, unknown>
+  if (record.type === 'object' && record.properties) {
+    const properties = record.properties as Record<string, unknown>
+    const required = Array.isArray(record.required) ? record.required : []
+    if (Object.keys(properties).some((key) => !required.includes(key))) {
+      return false
+    }
+  }
+  return Object.values(record).every(supportsStrictJsonSchema)
 }
 
 class MockProvider implements ModelProvider {

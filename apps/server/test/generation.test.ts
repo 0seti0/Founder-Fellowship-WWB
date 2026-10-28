@@ -300,63 +300,70 @@ describe('initial generation pipeline', () => {
     'PARAPHRASE_ENSEMBLE_V1',
     'PARAPHRASE_RANDOM_STRING_V1',
     'SSOT_V1',
-  ] as const)('runs the expected calls and metadata for %s', async (strategy) => {
-    const baseProvider = createModelProvider({ MODEL_MODE: 'mock' })
-    const requests: Parameters<ModelProvider['generateStructured']>[0][] = []
-    const provider: ModelProvider = {
-      identity: baseProvider.identity,
-      generateStructured: async (request) => {
-        requests.push(request)
-        return baseProvider.generateStructured(request)
-      },
-      embed: (texts, signal) => baseProvider.embed(texts, signal),
-    }
-    const result = await generatePipeline({
-      prompt,
-      provider,
-      timeoutMs,
-      strategy,
-      explorationSeed: 'eval-v1',
-    })
-    const frameCalls = requests.filter((request) => request.task === 'frame')
-    expect(frameCalls).toHaveLength(
-      strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1' ? 1 : 6,
-    )
-    expect(
-      frameCalls.every(
-        (request) =>
-          (request.input as { originalPrompt: string }).originalPrompt ===
-          prompt,
-      ),
-    ).toBe(true)
-    expect(result.candidates).toHaveLength(6)
-    const keys = result.candidates.map((candidate) => candidate.content.key)
-    if (strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1') {
-      expect(new Set(keys).size).toBe(6)
-    } else {
-      expect(keys).toEqual(['k1', 'k2', 'k3', 'k4', 'k5', 'k6'])
-    }
-    if (strategy === 'JOINT_AXIS_FREE_V1') {
+  ] as const)(
+    'runs the expected calls and metadata for %s',
+    async (strategy) => {
+      const baseProvider = createModelProvider({ MODEL_MODE: 'mock' })
+      const requests: Parameters<ModelProvider['generateStructured']>[0][] = []
+      const provider: ModelProvider = {
+        identity: baseProvider.identity,
+        generateStructured: async (request) => {
+          requests.push(request)
+          return baseProvider.generateStructured(request)
+        },
+        embed: (texts, signal) => baseProvider.embed(texts, signal),
+      }
+      const result = await generatePipeline({
+        prompt,
+        provider,
+        timeoutMs,
+        strategy,
+        explorationSeed: 'eval-v1',
+      })
+      const frameCalls = requests.filter((request) => request.task === 'frame')
+      expect(frameCalls).toHaveLength(
+        strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1'
+          ? 1
+          : 6,
+      )
       expect(
-        result.candidates.every(
-          (candidate) =>
-            candidate.content.hypothesis.axes === undefined &&
-            candidate.content.facets === undefined,
+        frameCalls.every(
+          (request) =>
+            (request.input as { originalPrompt: string }).originalPrompt ===
+            prompt,
         ),
       ).toBe(true)
-    }
-    if (strategy === 'PARAPHRASE_RANDOM_STRING_V1') {
-      const strings = frameCalls.map(
-        (request) =>
-          (request.input as { explorationString: string }).explorationString,
-      )
-      expect(strings.every((value) => /^[a-z0-9]{16}$/.test(value))).toBe(true)
-      expect(new Set(strings).size).toBe(6)
-    }
-    expect(result.candidates.every((candidate) => candidate.generationMeta)).toBe(
-      true,
-    )
-  })
+      expect(result.candidates).toHaveLength(6)
+      const keys = result.candidates.map((candidate) => candidate.content.key)
+      if (strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1') {
+        expect(new Set(keys).size).toBe(6)
+      } else {
+        expect(keys).toEqual(['k1', 'k2', 'k3', 'k4', 'k5', 'k6'])
+      }
+      if (strategy === 'JOINT_AXIS_FREE_V1') {
+        expect(
+          result.candidates.every(
+            (candidate) =>
+              candidate.content.hypothesis.axes === undefined &&
+              candidate.content.facets === undefined,
+          ),
+        ).toBe(true)
+      }
+      if (strategy === 'PARAPHRASE_RANDOM_STRING_V1') {
+        const strings = frameCalls.map(
+          (request) =>
+            (request.input as { explorationString: string }).explorationString,
+        )
+        expect(strings.every((value) => /^[a-z0-9]{16}$/.test(value))).toBe(
+          true,
+        )
+        expect(new Set(strings).size).toBe(6)
+      }
+      expect(
+        result.candidates.every((candidate) => candidate.generationMeta),
+      ).toBe(true)
+    },
+  )
 
   it('calculates the rubric Q from its exact weights', () => {
     expect(
@@ -793,10 +800,14 @@ describe('initial generation pipeline', () => {
     const second = makeSelectionCandidate(2, axes)
     first.qualityScore = 0.8
     second.qualityScore = 0.7
-    selectCandidates([first, second], [first, second], [
-      [1, 0.4],
-      [0.4, 1],
-    ])
+    selectCandidates(
+      [first, second],
+      [first, second],
+      [
+        [1, 0.4],
+        [0.4, 1],
+      ],
+    )
     expect(first.selectionScore).toBeCloseTo(0.8)
     expect(second.selectionScore).toBeCloseTo(0.64)
     expect(
@@ -997,8 +1008,12 @@ describe('initial generation pipeline', () => {
     ).toBe(0)
   })
 
-  it('does not fall back to mock when the live provider is unimplemented', async () => {
-    const provider = createModelProvider({ MODEL_MODE: 'live' })
+  it('does not fall back to mock when a live provider has no key', async () => {
+    const provider = createModelProvider({
+      MODEL_MODE: 'live',
+      LLM_API_KEY: undefined,
+      MODEL_API_KEY: undefined,
+    })
     await expect(
       provider.generateStructured({
         task: 'extract',
@@ -1009,7 +1024,7 @@ describe('initial generation pipeline', () => {
         signal: AbortSignal.timeout(timeoutMs),
       }),
     ).rejects.toMatchObject({ code: 'PROVIDER_ERROR' })
-    expect(provider.identity.provider).toBe('live')
+    expect(provider.identity.provider).toBe('openai-compatible')
   })
 
   it('keeps typed pipeline errors for callers', async () => {

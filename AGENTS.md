@@ -103,3 +103,10 @@ Integration and end-to-end tests need MySQL running with `pnpm db:up` and migrat
 
 Useful commands: `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`,
 `pnpm test:integration`, `pnpm test:e2e`, `pnpm db:generate`, and `pnpm db:migrate`.
+
+Mock mode is the default and does not require a model credential. For live generation, set
+`MODEL_MODE=live` and the server-only `LLM_API_KEY`; an OpenAI-compatible base URL and model names
+can be configured with `LLM_BASE_URL`, `LLM_MODEL_STRONG`, `LLM_MODEL_FAST`, and
+`LLM_EMBEDDING_MODEL`, with optional `LLM_TEMPERATURE`. `MODEL_API_KEY` is a deprecated fallback
+and emits a one-line warning without revealing its value. Provider failures do not silently fall
+back to mock output.
