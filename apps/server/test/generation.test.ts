@@ -35,6 +35,23 @@ async function generate(mockScenario?: MockScenario) {
   return generateForPrompt(prompt, mockScenario)
 }
 
+function providerWithMalformedFrames(malformedAttempts: number) {
+  const mock = createModelProvider({ MODEL_MODE: 'mock' })
+  const frameRequests: Parameters<ModelProvider['generateStructured']>[0][] = []
+  const provider: ModelProvider = {
+    identity: mock.identity,
+    async generateStructured(request) {
+      if (request.task === 'frame') {
+        frameRequests.push(request)
+        if (frameRequests.length <= malformedAttempts) return {}
+      }
+      return mock.generateStructured(request)
+    },
+    embed: (texts, signal) => mock.embed(texts, signal),
+  }
+  return { provider, frameRequests }
+}
+
 const contactTerms =
   /\b(?:contact|interview|ask|invite|survey|call|email|message|talk|meet|reach(?:\s+out)?)(?:s|ed|ing)?\b/i
 
@@ -292,6 +309,75 @@ describe('initial generation pipeline', () => {
       })
     }
   })
+
+  it.each(['JOINT_AXIS_V1', 'JOINT_AXIS_FREE_V1'] as const)(
+    'retries malformed joint framing once for %s',
+    async (strategy) => {
+      const { provider, frameRequests } = providerWithMalformedFrames(1)
+      const result = await generatePipeline({
+        prompt,
+        provider,
+        timeoutMs,
+        strategy,
+      })
+      const frameAttempts = result.attempts.filter(
+        (attempt) => attempt.task === 'frame',
+      )
+
+      expect(frameRequests).toHaveLength(2)
+      expect(result.candidates).toHaveLength(6)
+      expect(
+        frameAttempts.map(({ attempt, ok, reason }) => ({
+          attempt,
+          ok,
+          reason,
+        })),
+      ).toEqual([
+        {
+          attempt: 1,
+          ok: false,
+          reason: frameRequests[0]?.promptVersion,
+        },
+        {
+          attempt: 2,
+          ok: true,
+          reason: frameRequests[1]?.promptVersion,
+        },
+      ])
+      expect(
+        result.candidates.every(
+          (candidate) =>
+            candidate.generationMeta?.promptVersion ===
+            frameAttempts[1]?.reason,
+        ),
+      ).toBe(true)
+    },
+  )
+
+  it.each(['JOINT_AXIS_V1', 'JOINT_AXIS_FREE_V1'] as const)(
+    'fails joint framing after two malformed outputs for %s',
+    async (strategy) => {
+      const { provider, frameRequests } = providerWithMalformedFrames(2)
+      let failure: unknown
+      try {
+        await generatePipeline({ prompt, provider, timeoutMs, strategy })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(PipelineError)
+      expect(failure).toMatchObject({ code: 'MALFORMED_OUTPUT' })
+      expect(frameRequests).toHaveLength(2)
+      expect(
+        (failure as PipelineError).attempts.filter(
+          (attempt) => attempt.task === 'frame',
+        ),
+      ).toMatchObject([
+        { attempt: 1, ok: false, code: 'MALFORMED_OUTPUT' },
+        { attempt: 2, ok: false, code: 'MALFORMED_OUTPUT' },
+      ])
+    },
+  )
 
   it.each([
     'JOINT_AXIS_V1',

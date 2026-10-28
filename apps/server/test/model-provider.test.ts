@@ -459,7 +459,7 @@ describe('Anthropic live provider', () => {
     }
     expect(body).toMatchObject({
       model: 'claude-haiku-4-5',
-      max_tokens: 4096,
+      max_tokens: 16_000,
     })
   })
 
@@ -507,6 +507,34 @@ describe('Anthropic live provider', () => {
       ) as { model: string }
       expect(body.model, task).toBe('claude-fast-test')
     }
+  })
+
+  it('rejects max-token truncation after reporting usage', async () => {
+    const partialInput = { candidates: [{ title: 'Truncated candidate' }] }
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            stop_reason: 'max_tokens',
+            content: [{ type: 'tool_use', input: partialInput }],
+            usage: { input_tokens: 1200, output_tokens: 2048 },
+          }),
+          { status: 200 },
+        ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    let usage: Record<string, number> | undefined
+    const result = request(anthropicProvider(), {
+      onUsage: (value) => {
+        usage = value
+      },
+    })
+    await expect(result).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message:
+        'Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=2048)',
+    })
+    expect(usage).toEqual({ input_tokens: 1200, output_tokens: 2048 })
   })
 
   it('maps HTTP and Anthropic error responses to PROVIDER_ERROR', async () => {

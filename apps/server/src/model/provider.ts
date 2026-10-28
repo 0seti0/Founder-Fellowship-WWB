@@ -498,7 +498,8 @@ function liveConfiguration(
     LLM_EMBEDDING_MODEL:
       environment.LLM_EMBEDDING_MODEL ?? runtimeEnv.LLM_EMBEDDING_MODEL,
     LLM_TEMPERATURE: environment.LLM_TEMPERATURE ?? runtimeEnv.LLM_TEMPERATURE,
-    LLM_MAX_TOKENS: environment.LLM_MAX_TOKENS ?? runtimeEnv.LLM_MAX_TOKENS,
+    LLM_MAX_TOKENS:
+      environment.LLM_MAX_TOKENS ?? runtimeEnv.LLM_MAX_TOKENS ?? 16_000,
   }
 }
 
@@ -736,6 +737,7 @@ class AnthropicProvider implements ModelProvider {
     )) as {
       type?: string
       error?: { type?: string }
+      stop_reason?: string
       content?: AnthropicContentBlock[]
       usage?: { input_tokens?: number; output_tokens?: number }
     }
@@ -754,6 +756,12 @@ class AnthropicProvider implements ModelProvider {
         input_tokens: envelope.usage.input_tokens,
         output_tokens: envelope.usage.output_tokens,
       })
+    }
+    if (envelope.stop_reason === 'max_tokens') {
+      throw new ProviderError(
+        `Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=${this.configuration.LLM_MAX_TOKENS})`,
+        'PROVIDER_ERROR',
+      )
     }
     if (!Array.isArray(envelope.content) || envelope.content.length === 0) {
       throw new ProviderError(

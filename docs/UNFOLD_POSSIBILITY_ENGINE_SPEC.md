@@ -257,13 +257,17 @@ mock.
 a deprecated fallback and produces a one-line warning without logging the
 value. `LLM_PROVIDER` defaults to `openai`; provider-specific defaults are:
 
+`MODEL_TIMEOUT_MS` is applied separately to each model call, not to the full
+generation run. For live runs, consider setting `MODEL_TIMEOUT_MS=180000`
+(three minutes).
+
 | Setting               | OpenAI default / use                           | Anthropic default / use                              |
 | --------------------- | ---------------------------------------------- | ---------------------------------------------------- |
 | `LLM_BASE_URL`        | `https://api.openai.com/v1`                    | `https://api.anthropic.com/v1`                       |
 | `LLM_MODEL_STRONG`    | `gpt-4.1` for frame, expansion, and evaluation | `claude-sonnet-4-5` for frame, expansion, evaluation |
 | `LLM_MODEL_FAST`      | `gpt-4.1-mini` for extraction and comparison   | `claude-haiku-4-5` for extraction and comparison     |
 | `LLM_EMBEDDING_MODEL` | `text-embedding-3-small`                       | Not used                                             |
-| `LLM_MAX_TOKENS`      | `4096` (not used by the adapter)               | `4096`                                               |
+| `LLM_MAX_TOKENS`      | `4096` (not used by the adapter)               | `16000`                                              |
 | `LLM_TEMPERATURE`     | Optional; omitted unless configured            | Optional; omitted unless configured                  |
 
 Mock mode is the default for local tests and CI. Credentials remain on the

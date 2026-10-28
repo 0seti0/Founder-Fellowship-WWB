@@ -449,60 +449,64 @@ async function frame(
     const promptVersion = axisFree
       ? FRAME_AXIS_FREE_PROMPT_VERSION
       : FRAME_PROMPT_VERSION
-    const result = await invoke(
-      provider,
-      {
-        task: 'frame',
-        promptVersion,
-        schemaVersion: SCHEMA_VERSION,
-        system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
-        input: {
-          originalPrompt: prompt,
-          facts,
-          constraints,
-          strategy,
+    const system = axisFree
+      ? FRAME_AXIS_FREE_SYSTEM_PROMPT
+      : FRAME_SYSTEM_PROMPT
+    const callMeta = {
+      index: 0,
+      promptVersion,
+      system,
+      instructionVariant: null,
+    }
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const result = await invoke(
+        provider,
+        {
+          task: 'frame',
+          promptVersion,
+          schemaVersion: SCHEMA_VERSION,
+          system,
+          input: {
+            originalPrompt: prompt,
+            facts,
+            constraints,
+            strategy,
+          },
         },
-      },
-      timeoutMs,
-      attempts,
-      1,
-    )
-    const parsed = FrameOutputSchema.safeParse(result)
-    if (!parsed.success) {
+        timeoutMs,
+        attempts,
+        attempt,
+      )
+      const parsed = FrameOutputSchema.safeParse(result)
+      if (!parsed.success) {
+        recordAttempt(attempts, {
+          task: 'frame',
+          attempt,
+          ok: false,
+          code: 'MALFORMED_OUTPUT',
+          message: parsed.error.message,
+          reason: promptVersion,
+          metadata: callMeta,
+        })
+        if (attempt === 2)
+          throw new PipelineError(
+            'Frame output did not match the required schema',
+            'MALFORMED_OUTPUT',
+            attempts,
+          )
+        continue
+      }
+      candidates.push(...parsed.data.candidates)
       recordAttempt(attempts, {
         task: 'frame',
-        attempt: 1,
-        ok: false,
-        code: 'MALFORMED_OUTPUT',
-        message: parsed.error.message,
+        attempt,
+        ok: true,
+        reason: promptVersion,
+        metadata: callMeta,
       })
-      throw new PipelineError(
-        'Frame output did not match the required schema',
-        'MALFORMED_OUTPUT',
-        attempts,
-      )
+      metadata.calls = [callMeta]
+      break
     }
-    candidates.push(...parsed.data.candidates)
-    recordAttempt(attempts, {
-      task: 'frame',
-      attempt: 1,
-      ok: true,
-      reason: promptVersion,
-      metadata: {
-        index: 0,
-        promptVersion,
-        system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
-        instructionVariant: null,
-      },
-    })
-    metadata.calls = [
-      {
-        index: 0,
-        promptVersion,
-        system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
-        instructionVariant: null,
-      },
-    ]
   } else {
     for (let index = 0; index < 6; index += 1) {
       const randomString =

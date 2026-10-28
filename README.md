@@ -26,13 +26,16 @@ default or `anthropic`), and set the server-only `LLM_API_KEY` in `.env`. OpenAI
 `https://api.openai.com/v1`, `gpt-4.1` for framing/expansion/evaluation, `gpt-4.1-mini` for
 extraction/comparison, and `text-embedding-3-small` for embeddings. Anthropic defaults to
 `https://api.anthropic.com/v1`, `claude-sonnet-4-5` for framing/expansion/evaluation, and
-`claude-haiku-4-5` for extraction/comparison; `LLM_MAX_TOKENS` defaults to `4096`. `LLM_BASE_URL`,
+`claude-haiku-4-5` for extraction/comparison; `LLM_MAX_TOKENS` defaults to `16000`. `LLM_BASE_URL`,
 `LLM_MODEL_STRONG`, `LLM_MODEL_FAST`, `LLM_EMBEDDING_MODEL` (OpenAI only), `LLM_MAX_TOKENS`, and
 optional `LLM_TEMPERATURE` can be configured there. Anthropic does not provide embeddings, so its
 runs deduplicate in degraded word-overlap mode using normalized token-set Jaccard similarity at
 `≥ 0.8`, recorded as `TEXT_FALLBACK`. The deprecated `MODEL_API_KEY` variable remains a fallback
 and emits a one-line warning; it is never logged or sent in request bodies. Live-provider failures
 are returned to the caller and never fall back to mock output.
+
+`MODEL_TIMEOUT_MS` applies separately to each model call, not to the total generation run. For live
+runs, consider setting it to `180000` (three minutes).
 
 ## Prompt-to-graph
 

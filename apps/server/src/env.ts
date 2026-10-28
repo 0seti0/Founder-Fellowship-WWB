@@ -89,7 +89,7 @@ const EnvironmentSchema = z
       LLM_MODEL_FAST: value.LLM_MODEL_FAST ?? defaults.fastModel,
       LLM_EMBEDDING_MODEL:
         value.LLM_EMBEDDING_MODEL ?? 'text-embedding-3-small',
-      LLM_MAX_TOKENS: value.LLM_MAX_TOKENS ?? 4096,
+      LLM_MAX_TOKENS: value.LLM_MAX_TOKENS ?? 16_000,
     }
   })
 
