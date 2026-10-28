@@ -2,19 +2,22 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
 
+const webPort = Number(process.env.E2E_WEB_PORT ?? 5173)
+const serverUrl = process.env.E2E_SERVER_URL ?? 'http://localhost:3001'
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5173,
+    port: webPort,
     proxy: {
-      '/trpc': 'http://localhost:3001',
-      '/health': 'http://localhost:3001',
+      '/trpc': serverUrl,
+      '/health': serverUrl,
     },
   },
   preview: {
     proxy: {
-      '/trpc': 'http://localhost:3001',
-      '/health': 'http://localhost:3001',
+      '/trpc': serverUrl,
+      '/health': serverUrl,
     },
   },
   test: {

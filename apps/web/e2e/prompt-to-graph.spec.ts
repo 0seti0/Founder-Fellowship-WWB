@@ -1,6 +1,7 @@
 import { expect, test, type Locator } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { submitPrompt } from './helpers'
 
 const evidenceDirectory = resolve(
   process.env.E2E_EVIDENCE_DIR ?? 'e2e-evidence',
@@ -26,7 +27,7 @@ test('creates, inspects, and restores a prompt graph', async ({
     .fill(
       'I want to explore a neighborhood bakery idea for people who need a welcoming place to meet.',
     )
-  await page.getByRole('button', { name: 'Unfold', exact: true }).click()
+  await submitPrompt(page, testInfo.project.name !== 'mobile')
 
   const graphCanvas = page.getByTestId('graph-canvas')
   const graphNodes = graphCanvas.locator('.react-flow__node')
@@ -112,7 +113,7 @@ test('keeps the root prompt visible when generation fails', async ({
   await page
     .getByLabel('Your prompt')
     .fill('I want to test whether my neighborhood can support a bakery.')
-  await page.getByRole('button', { name: 'Unfold', exact: true }).click()
+  await submitPrompt(page, testInfo.project.name !== 'mobile')
 
   await expect(page.getByTestId('failure-state')).toBeVisible({
     timeout: 30_000,

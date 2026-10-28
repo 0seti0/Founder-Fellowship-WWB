@@ -57,10 +57,15 @@ describe('functional-equivalence comparison', () => {
     expect(result.attempts).toEqual([{ task: 'compare', attempt: 1, ok: true }])
     expect(request).toMatchObject({
       task: 'compare',
-      promptVersion: 'functional-equivalence-v1',
+      promptVersion: 'functional-equivalence-v2',
       system: FUNCTIONAL_EQUIVALENCE_SYSTEM_PROMPT,
       input: {
         originalPrompt: input.originalPrompt,
+        currentDate: {
+          today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+          weekday: expect.any(String),
+          timezone: expect.any(String),
+        },
         constraints: [],
         left: candidate,
         right: input.right,
@@ -68,6 +73,7 @@ describe('functional-equivalence comparison', () => {
     })
     expect(Object.keys(request!.input as object).sort()).toEqual([
       'constraints',
+      'currentDate',
       'left',
       'originalPrompt',
       'right',

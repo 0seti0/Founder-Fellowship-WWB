@@ -11,7 +11,11 @@ import {
   PipelineError,
 } from '../src/generation/pipeline'
 import { OPERATOR_REGISTRY } from '../src/operators/registry'
-import { createModelProvider, embedText } from '../src/model/provider'
+import {
+  createModelProvider,
+  embedText,
+  type ModelProvider,
+} from '../src/model/provider'
 
 const prompt = 'I want to open a bakery for neighbors.'
 const timeoutMs = 100
@@ -56,6 +60,39 @@ async function expand(
 }
 
 describe('operator expansion pipeline', () => {
+  it('uses the same current date for expansion and evaluation calls', async () => {
+    const { parent, facts } = await expansionContext()
+    const baseProvider = createModelProvider({ MODEL_MODE: 'mock' })
+    const requests: Parameters<ModelProvider['generateStructured']>[0][] = []
+    const provider: ModelProvider = {
+      identity: baseProvider.identity,
+      generateStructured: async (request) => {
+        requests.push(request)
+        return baseProvider.generateStructured(request)
+      },
+      embed: (texts, signal) => baseProvider.embed(texts, signal),
+    }
+    await expandPipeline({
+      operator: 'GROUND',
+      parent,
+      rootPrompt: prompt,
+      facts,
+      constraints: [],
+      provider,
+      timeoutMs,
+    })
+    const dateContexts = requests.map(
+      (request) => (request.input as { currentDate?: unknown }).currentDate,
+    )
+    expect(requests.map((request) => request.task)).toEqual([
+      'expand',
+      'evaluate',
+    ])
+    expect(
+      new Set(dateContexts.map((value) => JSON.stringify(value))).size,
+    ).toBe(1)
+  })
+
   it.each(['GROUND', 'REFRAME', 'LEAP', 'INVERT', 'TRANSPLANT'] as const)(
     'validates %s output and its operator effect',
     async (operator) => {

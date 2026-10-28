@@ -28,8 +28,10 @@ import {
 } from 'react'
 import '@xyflow/react/dist/style.css'
 import { layoutWithPreservedPositions } from './lib/layout'
+import { buildPresenterScript, scriptFromProgress } from './lib/presenterScript'
 import { buildRenderedGraph } from './lib/renderedGraph'
 import { trpcClient } from './lib/trpc'
+import { Presenter } from './components/Presenter'
 import { Stage2Controls } from './components/Stage2Controls'
 
 type GraphNodeData = {
@@ -97,9 +99,47 @@ export function App() {
     queryKey: ['projects', projectId],
     queryFn: () => trpcClient.projects.get.query({ id: projectId! }),
     enabled: Boolean(projectId),
+    refetchInterval: (query) =>
+      query.state.data?.latestRun?.status === 'RUNNING' ? 1500 : false,
     retry: false,
   })
   const projectData = projectQuery.data
+  const [presenter, setPresenter] = useState<
+    | { kind: 'replay' }
+    | {
+        kind: 'live'
+        projectId: string
+        runId: string
+        prompt: string
+        mockScenario: string | null
+      }
+    | null
+  >(null)
+  const presentButtonRef = useRef<HTMLButtonElement>(null)
+  const presenterScript = useMemo(
+    () => (projectData ? buildPresenterScript(projectData) : null),
+    [projectData],
+  )
+  const liveInitial = useMemo(
+    () =>
+      presenter?.kind === 'live'
+        ? scriptFromProgress(
+            {
+              prompt: presenter.prompt,
+              modelLabel: '',
+              policyVersion: '',
+              rubricVersion: null,
+            },
+            null,
+          ).script
+        : null,
+    [presenter],
+  )
+  const closePresenter = useCallback(() => {
+    setPresenter(null)
+    void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    requestAnimationFrame(() => presentButtonRef.current?.focus())
+  }, [queryClient])
   const renderedGraph = useMemo(
     () =>
       buildRenderedGraph(
@@ -316,12 +356,21 @@ export function App() {
     setIsCreating(true)
     setSelectedNodeId(null)
     try {
-      const result = await trpcClient.projects.create.mutate({
+      const submittedPrompt = prompt.trim()
+      const result = await trpcClient.projects.start.mutate({
         prompt,
         ...(health.data?.modelMode === 'mock' ? { mockScenario } : {}),
       })
       setProjectId(result.projectId)
       updateUrl(result.projectId, null)
+      if (!isMobile)
+        setPresenter({
+          kind: 'live',
+          projectId: result.projectId,
+          runId: result.runId,
+          prompt: submittedPrompt,
+          mockScenario: health.data?.modelMode === 'mock' ? mockScenario : null,
+        })
       await queryClient.invalidateQueries({ queryKey: ['projects', 'list'] })
     } catch (error) {
       setUiError(errorMessage(error))
@@ -392,7 +441,10 @@ export function App() {
   const run = projectData?.latestRun
   const isFailed = run?.status === 'FAILED'
   const isGenerating =
-    isCreating || isRetrying || (Boolean(projectId) && projectQuery.isPending)
+    isCreating ||
+    isRetrying ||
+    (Boolean(projectId) && projectQuery.isPending) ||
+    run?.status === 'RUNNING'
   const serverLabel = health.isPending
     ? 'checking'
     : health.isError
@@ -552,6 +604,18 @@ export function App() {
                     directions
                   </p>
                 )}
+                {presenterScript && (
+                  <button
+                    ref={presentButtonRef}
+                    type="button"
+                    className="present-button"
+                    data-testid="present-button"
+                    onClick={() => setPresenter({ kind: 'replay' })}
+                  >
+                    <span aria-hidden="true" />
+                    Watch it think
+                  </button>
+                )}
                 <button
                   type="button"
                   className="secondary-button reveal-toggle"
@@ -618,7 +682,7 @@ export function App() {
                   minZoom={0.2}
                   proOptions={{ hideAttribution: true }}
                 >
-                  <Background color="#e5e1d7" gap={24} size={1} />
+                  <Background color="#b9c1cd" gap={24} size={1.2} />
                   <Controls showInteractive={false} />
                 </ReactFlow>
               </div>
@@ -640,6 +704,20 @@ export function App() {
           )}
         </section>
       </div>
+      {presenter?.kind === 'replay' && presenterScript && (
+        <Presenter
+          initial={presenterScript}
+          live={null}
+          onClose={closePresenter}
+        />
+      )}
+      {presenter?.kind === 'live' && liveInitial && (
+        <Presenter
+          initial={liveInitial}
+          live={presenter}
+          onClose={closePresenter}
+        />
+      )}
     </main>
   )
 }

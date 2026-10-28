@@ -9,7 +9,6 @@ import {
   type PromptItemDto,
   type UnaryOperator,
   type IdeaContent,
-  type CandidateQuality,
 } from '@unfold/shared'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
@@ -32,18 +31,17 @@ import {
   EXPANSION_SELECTION_POLICY_VERSION,
   expandPipeline,
   generatePipeline,
+  qualityForCandidate,
   PipelineError,
   RUBRIC_VERSION,
-  RUBRIC_WEIGHTS,
   SCHEMA_VERSION,
   SELECTION_POLICY_VERSION,
   type PipelineAttempt,
   type PipelineResult,
-  type ScoredCandidate,
 } from './pipeline'
 import {
   EVALUATE_RUBRIC_PROMPT_VERSION,
-  EXPAND_PROMPT_VERSION_V2,
+  EXPAND_PROMPT_VERSION_V3,
   EXTRACT_PROMPT_VERSION,
   FRAME_AXIS_FREE_PROMPT_VERSION,
 } from './prompts'
@@ -58,6 +56,7 @@ import {
   PLANNING_FEATURES_VERSION,
   SUITABILITY_VERSION,
 } from '../operators/planning'
+import { currentDateContext, type CurrentDateContext } from './currentDate'
 
 export class GenerationServiceError extends Error {
   constructor(
@@ -78,15 +77,29 @@ export async function createProject(
     timeoutMs: number
   },
 ) {
+  const projectId = await createProjectRoot(connection, options.prompt)
+  const generation = await generateInitial(connection, {
+    projectId,
+    mockScenario: options.mockScenario,
+    modelMode: options.modelMode,
+    timeoutMs: options.timeoutMs,
+  })
+  return { projectId, ...generation }
+}
+
+async function createProjectRoot(
+  connection: DatabaseConnection,
+  prompt: string,
+) {
   const projectId = randomUUID()
   const rootNodeId = randomUUID()
   const createdAt = new Date()
-  const title = options.prompt.trim().split(/\s+/).slice(0, 8).join(' ')
+  const title = prompt.trim().split(/\s+/).slice(0, 8).join(' ')
   await connection.db.transaction(async (tx) => {
     await tx.insert(projects).values({
       id: projectId,
       title: title.slice(0, 191) || 'Untitled idea',
-      originalPrompt: options.prompt,
+      originalPrompt: prompt,
       createdAt,
       updatedAt: createdAt,
     })
@@ -99,8 +112,8 @@ export async function createProject(
       runId: null,
       candidateId: null,
       title: 'Your prompt',
-      summary: options.prompt.slice(0, 600),
-      content: { prompt: options.prompt },
+      summary: prompt.slice(0, 600),
+      content: { prompt },
       displayPosition: null,
       createdAt,
     })
@@ -115,24 +128,55 @@ export async function createProject(
       createdAt,
     })
   })
-  const generation = await generateInitial(connection, {
+  return projectId
+}
+
+export async function startInitial(
+  connection: DatabaseConnection,
+  options: {
+    prompt: string
+    mockScenario?: MockScenario
+    modelMode: ModelMode
+    timeoutMs: number
+  },
+): Promise<{ projectId: string; runId: string; completion: Promise<void> }> {
+  const projectId = await createProjectRoot(connection, options.prompt)
+  const currentDate = currentDateContext()
+  const runId = await beginInitial(connection, {
     projectId,
     mockScenario: options.mockScenario,
     modelMode: options.modelMode,
     timeoutMs: options.timeoutMs,
+    currentDate,
   })
-  return { projectId, ...generation }
+  const completion = executeInitial(connection, {
+    projectId,
+    runId,
+    mockScenario: options.mockScenario,
+    modelMode: options.modelMode,
+    timeoutMs: options.timeoutMs,
+    currentDate,
+  }).then(
+    () => undefined,
+    () => {
+      try {
+        console.error('Background initial generation failed', { runId })
+      } catch {}
+    },
+  )
+  return { projectId, runId, completion }
 }
 
-export async function generateInitial(
+export async function beginInitial(
   connection: DatabaseConnection,
   options: {
     projectId: string
     mockScenario?: MockScenario
     modelMode: ModelMode
     timeoutMs: number
+    currentDate: CurrentDateContext
   },
-) {
+): Promise<string> {
   const { db } = connection
   const [project] = await db
     .select()
@@ -162,6 +206,7 @@ export async function generateInitial(
 
   const runId = randomUUID()
   const startedAt = new Date()
+  const currentDate = options.currentDate
   const provider = createModelProvider(
     { MODEL_MODE: options.modelMode },
     { mockScenario: options.mockScenario },
@@ -190,8 +235,42 @@ export async function generateInitial(
     mockScenario: options.mockScenario ?? null,
     startedAt,
     finishedAt: null,
+    planningFeatures: { currentDate },
+    progress: {
+      stage: 'STARTED',
+      facts: [],
+      constraints: [],
+      candidates: [],
+    },
   })
+  return runId
+}
 
+export async function executeInitial(
+  connection: DatabaseConnection,
+  options: {
+    projectId: string
+    runId: string
+    mockScenario?: MockScenario
+    modelMode: ModelMode
+    timeoutMs: number
+    currentDate: CurrentDateContext
+  },
+) {
+  const { db } = connection
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, options.projectId))
+    .limit(1)
+  if (!project)
+    throw new GenerationServiceError('Project not found', 'NOT_FOUND')
+
+  const runId = options.runId
+  const provider = createModelProvider(
+    { MODEL_MODE: options.modelMode },
+    { mockScenario: options.mockScenario },
+  )
   let attempts: PipelineAttempt[] = []
   try {
     const pipeline = await generatePipeline({
@@ -199,6 +278,20 @@ export async function generateInitial(
       provider,
       timeoutMs: options.timeoutMs,
       strategy: 'JOINT_AXIS_FREE_V1',
+      currentDate: options.currentDate,
+      onProgress: async (progress) => {
+        try {
+          await db
+            .update(generationRuns)
+            .set({ progress })
+            .where(eq(generationRuns.id, runId))
+        } catch {
+          console.error('Unable to persist generation progress', {
+            runId,
+            stage: progress.stage,
+          })
+        }
+      },
     })
     attempts = pipeline.attempts
     await persistPipeline(connection, options.projectId, runId, pipeline)
@@ -278,6 +371,20 @@ export async function generateInitial(
     })
     return { runId, status: 'FAILED' as const, errorCode: code }
   }
+}
+
+export async function generateInitial(
+  connection: DatabaseConnection,
+  options: {
+    projectId: string
+    mockScenario?: MockScenario
+    modelMode: ModelMode
+    timeoutMs: number
+  },
+) {
+  const currentDate = currentDateContext()
+  const runId = await beginInitial(connection, { ...options, currentDate })
+  return executeInitial(connection, { ...options, runId, currentDate })
 }
 
 export async function projectOperatorOptions(
@@ -417,12 +524,14 @@ export async function expandNode(
   )
   const runId = randomUUID()
   const startedAt = new Date()
+  const currentDate = currentDateContext()
   const planningMetadata = {
     version: PLANNING_FEATURES_VERSION,
     suitabilityVersion: SUITABILITY_VERSION,
     features: planningFeatures,
     suitability: suitability.score,
     adjustments: suitability.breakdown,
+    currentDate,
   }
   await db.insert(generationRuns).values({
     id: runId,
@@ -433,7 +542,7 @@ export async function expandNode(
     modelName: provider.identity.model,
     promptVersions: {
       evaluate: EVALUATE_RUBRIC_PROMPT_VERSION,
-      expand: EXPAND_PROMPT_VERSION_V2,
+      expand: EXPAND_PROMPT_VERSION_V3,
     },
     operator: options.operator,
     parentNodeId: parent.id,
@@ -476,6 +585,7 @@ export async function expandNode(
       suitabilityScore: suitability.score,
       provider,
       timeoutMs: options.timeoutMs,
+      currentDate,
       existingChildren: existingChildren.map(({ node }) => ({
         id: node.id,
         title: node.title,
@@ -517,7 +627,7 @@ export async function expandNode(
             duplicateOfNodeId:
               candidate.selectionMetadata.duplicateOfNodeId ?? null,
           },
-          promptVersion: EXPAND_PROMPT_VERSION_V2,
+          promptVersion: EXPAND_PROMPT_VERSION_V3,
           schemaVersion: SCHEMA_VERSION,
           policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
           nodeId: null,
@@ -939,46 +1049,5 @@ function toPromptItemDto(item: typeof promptItems.$inferSelect): PromptItemDto {
     evidenceEnd: item.evidenceEnd,
     strength: item.strength,
     basis: item.basis,
-  }
-}
-
-function qualityForCandidate(candidate: ScoredCandidate): CandidateQuality {
-  const evaluation = candidate.evaluation
-  if ('intentAlignment' in evaluation) {
-    return {
-      intentAlignment: evaluation.intentAlignment,
-      usefulness: evaluation.usefulness,
-      specificity: evaluation.specificity,
-    }
-  }
-  return {
-    rubricVersion: RUBRIC_VERSION,
-    criteria: {
-      intentCompatibility: {
-        ...evaluation.intentCompatibility,
-        weight: RUBRIC_WEIGHTS.intentCompatibility,
-      },
-      decisionUsefulness: {
-        ...evaluation.decisionUsefulness,
-        weight: RUBRIC_WEIGHTS.decisionUsefulness,
-      },
-      specificityCoherence: {
-        ...evaluation.specificityCoherence,
-        weight: RUBRIC_WEIGHTS.specificityCoherence,
-      },
-      firstTestExecutability: {
-        ...evaluation.firstTestExecutability,
-        weight: RUBRIC_WEIGHTS.firstTestExecutability,
-      },
-      nonObviousness: {
-        ...evaluation.nonObviousness,
-        weight: RUBRIC_WEIGHTS.nonObviousness,
-      },
-    },
-    q: candidate.qualityScore,
-    floor: {
-      passed: candidate.eligibility === 'ELIGIBLE',
-      failures: candidate.rejectionReasons,
-    },
   }
 }

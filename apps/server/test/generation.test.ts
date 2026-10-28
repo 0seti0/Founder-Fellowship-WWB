@@ -3,6 +3,7 @@ import type {
   ExtractedConstraint,
   FrameCandidate,
   MockScenario,
+  RunProgress,
 } from '@unfold/shared'
 import {
   createModelProvider,
@@ -223,6 +224,54 @@ function expectContactProhibition(
 }
 
 describe('initial generation pipeline', () => {
+  it('emits stage progress and ignores progress callback failures', async () => {
+    const progress: RunProgress[] = []
+    const result = await generatePipeline({
+      prompt,
+      provider: createModelProvider({ MODEL_MODE: 'mock' }),
+      timeoutMs,
+      onProgress: (snapshot) => {
+        progress.push(snapshot)
+        throw new Error('progress callback failure')
+      },
+    })
+
+    expect(progress.map((snapshot) => snapshot.stage)).toEqual([
+      'EXTRACTED',
+      'FRAMED',
+      'EVALUATED',
+      'SELECTED',
+    ])
+    const framed = progress.find((snapshot) => snapshot.stage === 'FRAMED')!
+    expect(framed.candidates).toHaveLength(result.candidates.length)
+    expect(
+      framed.candidates.every(
+        (candidate) =>
+          candidate.quality === null &&
+          candidate.qualityScore === null &&
+          candidate.eligibility === null &&
+          candidate.selectionState === null &&
+          candidate.selectionScore === null &&
+          candidate.displayPosition === null &&
+          candidate.constraintEvaluations.length === 0 &&
+          candidate.rejectionReasons.length === 0,
+      ),
+    ).toBe(true)
+
+    const selected = progress.find((snapshot) => snapshot.stage === 'SELECTED')!
+    expect(
+      selected.candidates.map(({ key, displayPosition }) => [
+        key,
+        displayPosition,
+      ]),
+    ).toEqual(
+      result.candidates.map((candidate) => [
+        candidate.content.key,
+        candidate.displayPosition,
+      ]),
+    )
+  })
+
   it('records exact evidence spans from the prompt', async () => {
     const result = await generate()
 
@@ -407,6 +456,25 @@ describe('initial generation pipeline', () => {
         explorationSeed: 'eval-v1',
       })
       const frameCalls = requests.filter((request) => request.task === 'frame')
+      const dateContexts = requests.map(
+        (request) => (request.input as { currentDate?: unknown }).currentDate,
+      )
+      expect(
+        dateContexts.every(
+          (currentDate) =>
+            currentDate !== undefined &&
+            typeof currentDate === 'object' &&
+            currentDate !== null,
+        ),
+      ).toBe(true)
+      expect(
+        new Set(dateContexts.map((value) => JSON.stringify(value))).size,
+      ).toBe(1)
+      const extractInput = requests.find(
+        (request) => request.task === 'extract',
+      )!.input as { prompt: string; originalPrompt?: string }
+      expect(extractInput.prompt).toBe(prompt)
+      expect(extractInput.originalPrompt).toBeUndefined()
       expect(frameCalls).toHaveLength(
         strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1'
           ? 1
@@ -474,7 +542,7 @@ describe('initial generation pipeline', () => {
         const output = await baseProvider.generateStructured(request)
         if (
           request.task !== 'frame' ||
-          request.promptVersion !== 'frame-random-string-v1'
+          request.promptVersion !== 'frame-random-string-v2'
         )
           return output
         const result = output as { candidate: FrameCandidate }
@@ -1103,7 +1171,7 @@ describe('initial generation pipeline', () => {
     await expect(
       provider.generateStructured({
         task: 'extract',
-        promptVersion: 'extract-v1',
+        promptVersion: 'extract-v2',
         schemaVersion: 'stage1-v1',
         system: '',
         input: { prompt },

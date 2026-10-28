@@ -5,6 +5,7 @@ import {
   appMeta,
   candidates,
   edges,
+  events,
   generationRuns,
   hypotheses,
   nodes,
@@ -16,6 +17,7 @@ import { appRouter } from '../src/trpc/router'
 import { createContext } from '../src/trpc/context'
 import { applyGraphPatch, GraphPatchError } from '../src/graph/patch'
 import { IdeaContentSchema } from '@unfold/shared'
+import { startInitial } from '../src/generation/service'
 
 const databaseUrl =
   process.env.DATABASE_URL_TEST ??
@@ -59,6 +61,120 @@ describe('MySQL integration', () => {
     expect(result.migrationsApplied).toBeGreaterThanOrEqual(1)
   })
 
+  it('runs initial generation in the background and persists selected progress', async () => {
+    const connection = getDatabase(databaseUrl)
+    const started = await startInitial(connection, {
+      prompt: 'I want to open a bakery for neighbors.',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    await started.completion
+
+    const [run] = await connection.db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.id, started.runId))
+    expect(run?.status).toBe('SUCCEEDED')
+    expect(run?.progress?.stage).toBe('SELECTED')
+
+    const persistedCandidates = await connection.db
+      .select({
+        key: candidates.modelKey,
+        ordinal: candidates.ordinal,
+        selectionState: candidates.selectionState,
+        selectionScore: candidates.selectionScore,
+        displayPosition: candidates.displayPosition,
+      })
+      .from(candidates)
+      .where(eq(candidates.runId, started.runId))
+      .orderBy(candidates.ordinal)
+    const progressCandidates = run!.progress!.candidates
+    expect(
+      progressCandidates.map(
+        ({ key, ordinal, selectionState, displayPosition }) => ({
+          key,
+          ordinal,
+          selectionState,
+          displayPosition,
+        }),
+      ),
+    ).toEqual(
+      persistedCandidates.map(
+        ({ key, ordinal, selectionState, displayPosition }) => ({
+          key,
+          ordinal,
+          selectionState,
+          displayPosition,
+        }),
+      ),
+    )
+    for (const persisted of persistedCandidates) {
+      const progressed = progressCandidates.find(
+        (candidate) => candidate.key === persisted.key,
+      )!
+      if (persisted.selectionScore === null) {
+        expect(progressed.selectionScore).toBeNull()
+      } else {
+        expect(progressed.selectionScore).toBeCloseTo(
+          persisted.selectionScore,
+          14,
+        )
+      }
+    }
+
+    const polled = await appRouter
+      .createCaller(createContext(databaseUrl))
+      .runs.progress({ projectId: started.projectId, runId: started.runId })
+    expect(polled.progress?.stage).toBe('SELECTED')
+  })
+
+  it('keeps the last reached progress stage and records failed background runs', async () => {
+    const connection = getDatabase(databaseUrl)
+    const started = await startInitial(connection, {
+      prompt: 'I want to open a bakery for neighbors.',
+      mockScenario: 'provider-error',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    await started.completion
+
+    const [run] = await connection.db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.id, started.runId))
+    expect(run?.status).toBe('FAILED')
+    expect(run?.progress?.stage).toBe('STARTED')
+
+    const runEvents = await connection.db
+      .select()
+      .from(events)
+      .where(eq(events.runId, started.runId))
+    expect(runEvents.map((event) => event.type)).toContain('GENERATION_FAILED')
+  })
+
+  it('hides a run when progress is requested through another project', async () => {
+    const connection = getDatabase(databaseUrl)
+    const first = await startInitial(connection, {
+      prompt: 'I want to open a bakery for neighbors.',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    const second = await startInitial(connection, {
+      prompt: 'I want to start a community garden.',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    await Promise.all([first.completion, second.completion])
+
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    await expect(
+      caller.runs.progress({
+        projectId: second.projectId,
+        runId: first.runId,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
   it('persists a selected prompt graph and rolls back a failed graph patch', async () => {
     const caller = appRouter.createCaller(createContext(databaseUrl))
     const created = await caller.projects.create({
@@ -89,6 +205,18 @@ describe('MySQL integration', () => {
       selectionPolicyVersion: 'initial-mmr-v3',
       generationStrategy: 'JOINT_AXIS_FREE_V1',
       rubricVersion: 'candidate-rubric-v2',
+      promptVersions: {
+        extract: 'extract-v2',
+        frame: 'frame-axis-free-v2',
+        evaluate: 'evaluate-rubric-v3',
+      },
+    })
+    expect(project.latestRun?.planningFeatures).toMatchObject({
+      currentDate: {
+        today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        weekday: expect.any(String),
+        timezone: expect.any(String),
+      },
     })
 
     const { db, pool } = getDatabase(databaseUrl)
@@ -128,7 +256,7 @@ describe('MySQL integration', () => {
       expect(candidate.generationMeta).toMatchObject({
         strategy: 'JOINT_AXIS_FREE_V1',
         strategyVersion: 'v1',
-        promptVersion: 'frame-axis-free-v1',
+        promptVersion: 'frame-axis-free-v2',
       })
       const components = candidate.selectionMetadata.components as
         Record<string, unknown> | undefined
@@ -450,11 +578,18 @@ describe('MySQL integration', () => {
 
       expect(run.operator).toBe(operator)
       expect(run.operatorRegistryVersion).toBe('operators-v1')
-      expect(run.promptVersions.expand).toBe('expand-v2')
-      expect(run.promptVersions.evaluate).toBe('evaluate-rubric-v2')
+      expect(run.promptVersions.expand).toBe('expand-v3')
+      expect(run.promptVersions.evaluate).toBe('evaluate-rubric-v3')
       expect(run.schemaVersion).toBe('idea-schema-v2')
       expect(run.selectionPolicyVersion).toBe('expansion-mmr-v2')
       expect(run.rubricVersion).toBe('candidate-rubric-v2')
+      expect(run.planningFeatures).toMatchObject({
+        currentDate: {
+          today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+          weekday: expect.any(String),
+          timezone: expect.any(String),
+        },
+      })
       expect(runCandidates).toHaveLength(6)
       expect(selected.length).toBeGreaterThanOrEqual(1)
       expect(selected.length).toBeLessThanOrEqual(3)

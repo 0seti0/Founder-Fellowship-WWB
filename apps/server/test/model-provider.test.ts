@@ -6,6 +6,7 @@ import {
   EVALUATE_RUBRIC_PROMPT_VERSION,
   EXTRACT_PROMPT_VERSION,
   FRAME_AXIS_FREE_PROMPT_VERSION,
+  FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION,
 } from '../src/generation/prompts'
 import {
   createModelProvider,
@@ -92,7 +93,7 @@ function mockAnthropicFetch(options: { textFirstExtract?: boolean } = {}) {
           ? FRAME_AXIS_FREE_PROMPT_VERSION
           : task === 'evaluate'
             ? EVALUATE_RUBRIC_PROMPT_VERSION
-            : 'functional-equivalence-v1'
+            : FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION
     const input = JSON.parse(body.messages[0]!.content) as unknown
     const result = await mockProvider.generateStructured({
       task: task as StructuredGenerationRequest['task'],
@@ -118,7 +119,7 @@ function request(
 ) {
   return provider.generateStructured({
     task: 'extract',
-    promptVersion: 'extract-v1',
+    promptVersion: EXTRACT_PROMPT_VERSION,
     schemaVersion: 'idea-schema-v2',
     system: 'Extract evidence.',
     input: { prompt: 'A neighborhood bakery.' },
@@ -311,7 +312,7 @@ describe('OpenAI-compatible live provider', () => {
     const provider = createModelProvider({ MODEL_MODE: 'mock' })
     const result = await provider.generateStructured({
       task: 'compare',
-      promptVersion: 'functional-equivalence-v1',
+      promptVersion: FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION,
       schemaVersion: 'functional-equivalence-v1',
       system: '',
       input: {

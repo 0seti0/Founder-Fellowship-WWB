@@ -83,6 +83,12 @@ importers:
       '@dagrejs/dagre':
         specifier: ^1.1.5
         version: 1.1.8
+      '@fontsource-variable/schibsted-grotesk':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/ibm-plex-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@tanstack/react-query':
         specifier: ^5.90.12
         version: 5.104.5(@types/react@19.3.0)(react@19.3.1)
@@ -1405,6 +1411,18 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@fontsource-variable/schibsted-grotesk@5.3.0':
+    resolution:
+      {
+        integrity: sha512-ndS6H/KICWANchlHF3q4UdZD+xrZ3Ji0rUobIuXlgvDUzDfqZDsVuXPXZb636nJZMHE9zZ9Fmwgqazm8hMB50Q==,
+      }
+
+  '@fontsource/ibm-plex-mono@5.3.0':
+    resolution:
+      {
+        integrity: sha512-eTgnZjZEGk1QtD3ZstF+Vclo2HLAni8YMy34/DxllwZvyz1lR/1RF/xTiAquOBO7MvqBx8D2Ig2WCPMVfdZu7Q==,
+      }
 
   '@hono/node-server@1.19.17':
     resolution:
@@ -5110,6 +5128,10 @@ snapshots:
       levn: 0.4.1
 
   '@exodus/bytes@1.16.0': {}
+
+  '@fontsource-variable/schibsted-grotesk@5.3.0': {}
+
+  '@fontsource/ibm-plex-mono@5.3.0': {}
 
   '@hono/node-server@1.19.17(hono@4.13.13)':
     dependencies:

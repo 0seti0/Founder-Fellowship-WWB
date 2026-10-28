@@ -5,6 +5,7 @@ import {
   FrameSingleOutputSchema,
   FrameOutputSchema,
   SsotOutputSchema,
+  type CandidateQuality,
   type CandidateEvaluation,
   type CandidateEvaluationV2,
   type ExtractedConstraint,
@@ -12,6 +13,9 @@ import {
   type FrameCandidate,
   type GenerationStrategy,
   type IdeaContent,
+  type ProgressCandidate,
+  type ProgressItem,
+  type RunProgress,
   type UnaryOperator,
 } from '@unfold/shared'
 import { OPERATOR_REGISTRY } from '../operators/registry'
@@ -19,7 +23,6 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import {
   EVALUATE_RUBRIC_PROMPT_VERSION,
   EVALUATE_RUBRIC_SYSTEM_PROMPT,
-  EVALUATE_PROMPT_VERSION,
   EXTRACT_PROMPT_VERSION,
   EXTRACT_SYSTEM_PROMPT,
   FRAME_AXIS_FREE_PROMPT_VERSION,
@@ -33,11 +36,12 @@ import {
   SSOT_SYSTEM_PROMPT,
   FRAME_PROMPT_VERSION,
   FRAME_SYSTEM_PROMPT,
-  EXPAND_PROMPT_VERSION_V2,
+  EXPAND_PROMPT_VERSION_V3,
   EXPAND_SCHEMA_VERSION,
-  EXPAND_SYSTEM_PROMPT_V2,
+  EXPAND_SYSTEM_PROMPT_V3,
   frameParaphraseSystemPrompt,
 } from './prompts'
+import { currentDateContext, type CurrentDateContext } from './currentDate'
 import {
   ProviderError,
   type ModelProvider,
@@ -134,12 +138,138 @@ type PipelineOptions = {
   timeoutMs: number
   strategy?: GenerationStrategy
   explorationSeed?: string
+  onProgress?: (progress: RunProgress) => void | Promise<void>
+  currentDate?: CurrentDateContext
+}
+
+async function emitProgress(
+  onProgress: PipelineOptions['onProgress'],
+  progress: RunProgress,
+) {
+  try {
+    await onProgress?.(progress)
+  } catch {}
+}
+
+function progressItems(spans: EvidenceSpan[]): ProgressItem[] {
+  return spans.map(({ item, start, end }) => ({
+    ref: item.ref,
+    kind: 'strength' in item ? 'CONSTRAINT' : 'FACT',
+    text: item.text,
+    evidenceText: item.evidence,
+    evidenceStart: start,
+    evidenceEnd: end,
+    strength: 'strength' in item ? item.strength : null,
+  }))
+}
+
+function framedProgressCandidate(
+  content: FrameCandidate,
+  ordinal: number,
+): ProgressCandidate {
+  return {
+    key: content.key,
+    ordinal,
+    title: content.title,
+    distance: content.distance ?? null,
+    fitRationale: content.fitRationale,
+    strongestObjection: content.strongestObjection,
+    firstTest: content.firstTest,
+    quality: null,
+    qualityScore: null,
+    constraintEvaluations: [],
+    eligibility: null,
+    rejectionReasons: [],
+    selectionState: null,
+    selectionScore: null,
+    displayPosition: null,
+  }
+}
+
+export function qualityForCandidate(
+  candidate: ScoredCandidate,
+): CandidateQuality {
+  const evaluation = candidate.evaluation
+  if ('intentAlignment' in evaluation) {
+    return {
+      intentAlignment: evaluation.intentAlignment,
+      usefulness: evaluation.usefulness,
+      specificity: evaluation.specificity,
+    }
+  }
+  return {
+    rubricVersion: RUBRIC_VERSION,
+    criteria: {
+      intentCompatibility: {
+        ...evaluation.intentCompatibility,
+        weight: RUBRIC_WEIGHTS.intentCompatibility,
+      },
+      decisionUsefulness: {
+        ...evaluation.decisionUsefulness,
+        weight: RUBRIC_WEIGHTS.decisionUsefulness,
+      },
+      specificityCoherence: {
+        ...evaluation.specificityCoherence,
+        weight: RUBRIC_WEIGHTS.specificityCoherence,
+      },
+      firstTestExecutability: {
+        ...evaluation.firstTestExecutability,
+        weight: RUBRIC_WEIGHTS.firstTestExecutability,
+      },
+      nonObviousness: {
+        ...evaluation.nonObviousness,
+        weight: RUBRIC_WEIGHTS.nonObviousness,
+      },
+    },
+    q: candidate.qualityScore,
+    floor: {
+      passed: candidate.eligibility === 'ELIGIBLE',
+      failures: candidate.rejectionReasons,
+    },
+  }
+}
+
+function evaluatedProgressCandidate(
+  candidate: ScoredCandidate,
+  constraints: EvidenceSpan[],
+): ProgressCandidate {
+  const constraintsByRef = new Map(
+    constraints.map((span) => [span.item.ref, span.item]),
+  )
+  return {
+    ...framedProgressCandidate(candidate.content, candidate.ordinal),
+    quality: qualityForCandidate(candidate),
+    qualityScore: candidate.qualityScore,
+    constraintEvaluations: candidate.evaluation.constraints.map((result) => {
+      const constraint = constraintsByRef.get(result.constraintRef)
+      return {
+        ...result,
+        ...(constraint && 'strength' in constraint
+          ? { text: constraint.text, strength: constraint.strength }
+          : {}),
+      }
+    }),
+    eligibility: candidate.eligibility,
+    rejectionReasons: candidate.rejectionReasons,
+  }
+}
+
+function selectedProgressCandidate(
+  candidate: ScoredCandidate,
+  constraints: EvidenceSpan[],
+): ProgressCandidate {
+  return {
+    ...evaluatedProgressCandidate(candidate, constraints),
+    selectionState: candidate.selectionState,
+    selectionScore: candidate.selectionScore,
+    displayPosition: candidate.displayPosition,
+  }
 }
 
 const promptVersions = {
   extract: EXTRACT_PROMPT_VERSION,
   frame: FRAME_PROMPT_VERSION,
-  evaluate: EVALUATE_PROMPT_VERSION,
+  evaluate: EVALUATE_RUBRIC_PROMPT_VERSION,
 }
 
 export async function generatePipeline({
@@ -148,13 +278,28 @@ export async function generatePipeline({
   timeoutMs,
   strategy = 'JOINT_AXIS_FREE_V1',
   explorationSeed,
+  onProgress,
+  currentDate: suppliedCurrentDate,
 }: PipelineOptions): Promise<PipelineResult> {
+  const currentDate = suppliedCurrentDate ?? currentDateContext()
   const attempts: PipelineAttempt[] = []
-  const extracted = await extract(prompt, provider, timeoutMs, attempts)
+  const extracted = await extract(
+    prompt,
+    provider,
+    timeoutMs,
+    attempts,
+    currentDate,
+  )
   const facts = extracted.facts.map((span) => span.item as ExtractedFact)
   const constraints = extracted.constraints.map(
     (span) => span.item as ExtractedConstraint,
   )
+  await emitProgress(onProgress, {
+    stage: 'EXTRACTED',
+    facts: progressItems(extracted.facts),
+    constraints: progressItems(extracted.constraints),
+    candidates: [],
+  })
   const framed = await frame(
     prompt,
     facts,
@@ -163,8 +308,17 @@ export async function generatePipeline({
     timeoutMs,
     attempts,
     strategy,
+    currentDate,
     explorationSeed,
   )
+  await emitProgress(onProgress, {
+    stage: 'FRAMED',
+    facts: progressItems(extracted.facts),
+    constraints: progressItems(extracted.constraints),
+    candidates: framed.candidates.map((candidate, index) =>
+      framedProgressCandidate(candidate, index + 1),
+    ),
+  })
   const evaluations = await evaluateV2(
     framed.candidates,
     prompt,
@@ -172,6 +326,7 @@ export async function generatePipeline({
     provider,
     timeoutMs,
     attempts,
+    currentDate,
   )
   return completePipeline({
     facts: extracted.facts,
@@ -184,6 +339,7 @@ export async function generatePipeline({
     generationMeta: framed.metadata,
     strategy,
     additionalRejectionReasons: framed.rejectionReasons,
+    onProgress,
   })
 }
 
@@ -208,6 +364,7 @@ export async function expandPipeline(options: {
   suitabilityScore?: number
   provider: ModelProvider
   timeoutMs: number
+  currentDate?: CurrentDateContext
   existingChildren?: Array<{
     id: string
     title: string
@@ -215,6 +372,7 @@ export async function expandPipeline(options: {
     mechanism: string
   }>
 }) {
+  const currentDate = options.currentDate ?? currentDateContext()
   const attempts: PipelineAttempt[] = []
   const definition = OPERATOR_REGISTRY[options.operator]
   let content: IdeaContent[] | undefined
@@ -224,10 +382,11 @@ export async function expandPipeline(options: {
       options.provider,
       {
         task: 'expand',
-        promptVersion: EXPAND_PROMPT_VERSION_V2,
+        promptVersion: EXPAND_PROMPT_VERSION_V3,
         schemaVersion: EXPAND_SCHEMA_VERSION,
-        system: EXPAND_SYSTEM_PROMPT_V2,
+        system: EXPAND_SYSTEM_PROMPT_V3,
         input: {
+          currentDate,
           operator: options.operator,
           instruction: definition.instruction,
           exclusions: definition.exclusions,
@@ -313,6 +472,7 @@ export async function expandPipeline(options: {
     options.provider,
     options.timeoutMs,
     attempts,
+    currentDate,
   )
   return completePipeline({
     facts: options.facts.map((item) => ({
@@ -347,6 +507,7 @@ async function extract(
   provider: ModelProvider,
   timeoutMs: number,
   attempts: PipelineAttempt[],
+  currentDate: CurrentDateContext,
 ): Promise<{ facts: EvidenceSpan[]; constraints: EvidenceSpan[] }> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await invoke(
@@ -356,7 +517,7 @@ async function extract(
         promptVersion: promptVersions.extract,
         schemaVersion: SCHEMA_VERSION,
         system: EXTRACT_SYSTEM_PROMPT,
-        input: { prompt },
+        input: { prompt, currentDate },
       },
       timeoutMs,
       attempts,
@@ -428,6 +589,7 @@ async function frame(
   timeoutMs: number,
   attempts: PipelineAttempt[],
   strategy: GenerationStrategy,
+  currentDate: CurrentDateContext,
   explorationSeed?: string,
 ): Promise<{
   candidates: FrameCandidate[]
@@ -467,6 +629,7 @@ async function frame(
           schemaVersion: SCHEMA_VERSION,
           system,
           input: {
+            currentDate,
             originalPrompt: prompt,
             facts,
             constraints,
@@ -555,6 +718,7 @@ async function frame(
             schemaVersion: SCHEMA_VERSION,
             system,
             input: {
+              currentDate,
               originalPrompt: prompt,
               facts,
               constraints,
@@ -669,6 +833,7 @@ async function evaluateV2(
   provider: ModelProvider,
   timeoutMs: number,
   attempts: PipelineAttempt[],
+  currentDate: CurrentDateContext,
 ): Promise<CandidateEvaluationV2[]> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await invoke(
@@ -679,6 +844,7 @@ async function evaluateV2(
         schemaVersion: SCHEMA_VERSION,
         system: EVALUATE_RUBRIC_SYSTEM_PROMPT,
         input: {
+          currentDate,
           originalPrompt,
           constraints,
           candidates: candidates.map((candidate) => ({
@@ -777,6 +943,7 @@ async function completePipeline({
   suitability = 0,
   existingChildren = [],
   additionalRejectionReasons = new Map(),
+  onProgress,
 }: {
   facts: EvidenceSpan[]
   constraints: EvidenceSpan[]
@@ -797,6 +964,7 @@ async function completePipeline({
     mechanism: string
   }>
   additionalRejectionReasons?: Map<string, string[]>
+  onProgress?: PipelineOptions['onProgress']
 }): Promise<PipelineResult> {
   const promptFactIds = new Map<string, string>()
   for (const span of facts) {
@@ -887,6 +1055,15 @@ async function completePipeline({
     },
   )
 
+  await emitProgress(onProgress, {
+    stage: 'EVALUATED',
+    facts: progressItems(facts),
+    constraints: progressItems(constraints),
+    candidates: candidates.map((candidate) =>
+      evaluatedProgressCandidate(candidate, constraints),
+    ),
+  })
+
   let dedupMode: 'EMBEDDING' | 'TEXT_FALLBACK' = 'EMBEDDING'
   let degraded = false
   let degradationReason: string | null = null
@@ -972,6 +1149,14 @@ async function completePipeline({
     task: 'selection',
     ok: true,
     reason: SELECTION_POLICY_VERSION,
+  })
+  await emitProgress(onProgress, {
+    stage: 'SELECTED',
+    facts: progressItems(facts),
+    constraints: progressItems(constraints),
+    candidates: candidates.map((candidate) =>
+      selectedProgressCandidate(candidate, constraints),
+    ),
   })
   return {
     facts: facts.filter((span) => span.item.ref.startsWith('f')),
