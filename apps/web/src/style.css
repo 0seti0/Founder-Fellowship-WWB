@@ -551,7 +551,7 @@ input:focus-visible {
 }
 
 .graph-card.status-rejected {
-  border-color: transparent;
+  border: 1.5px dashed rgb(225 82 60 / 55%);
   background: #dbe0e6;
   box-shadow: var(--down-sm);
 }
