@@ -23,6 +23,17 @@ const databaseUrl =
   process.env.DATABASE_URL_TEST ??
   'mysql://unfold:unfold@localhost:3306/unfold_test'
 
+async function waitForRunCompletion(projectId: string, runId: string) {
+  const caller = appRouter.createCaller(createContext(databaseUrl))
+  const deadline = Date.now() + 20_000
+  let run = await caller.runs.progress({ projectId, runId })
+  while (run.status === 'RUNNING' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    run = await caller.runs.progress({ projectId, runId })
+  }
+  return run
+}
+
 describe('MySQL integration', () => {
   beforeAll(async () => {
     await runMigrations(databaseUrl)
@@ -496,6 +507,83 @@ describe('MySQL integration', () => {
     expect(expandedEvent?.payload).toMatchObject({
       displayedCount: expect.any(Number),
     })
+  })
+
+  it('streams expansion progress and persists the new children', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    const started = await caller.projects.expandStart({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+    })
+    const run = await waitForRunCompletion(started.projectId, started.runId)
+
+    expect(run.status).toBe('SUCCEEDED')
+    expect(run.progress?.stage).toBe('SELECTED')
+    const project = await caller.projects.get({ id: created.projectId })
+    const children = project.nodes.filter(
+      (node) => node.runId === started.runId,
+    )
+    expect(children.length).toBeGreaterThan(0)
+    expect(
+      children.every((child) =>
+        project.edges.some(
+          (edge) => edge.parentId === parent.id && edge.childId === child.id,
+        ),
+      ),
+    ).toBe(true)
+  })
+
+  it('records a failed background expansion run', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const parent = initial.nodes.find((node) => node.type === 'IDEA')!
+    const started = await caller.projects.expandStart({
+      projectId: created.projectId,
+      parentNodeId: parent.id,
+      operator: 'GROUND',
+      mockScenario: 'provider-error',
+    })
+    const run = await waitForRunCompletion(started.projectId, started.runId)
+
+    expect(run.status).toBe('FAILED')
+    expect(run.errorCode).toBeTruthy()
+  })
+
+  it('rejects ineligible expandStart requests before creating a run', async () => {
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    const created = await caller.projects.create({
+      prompt: 'I want to test a neighborhood bakery.',
+    })
+    const initial = await caller.projects.get({ id: created.projectId })
+    const root = initial.nodes.find((node) => node.type === 'ROOT_PROMPT')!
+    const { db } = getDatabase(databaseUrl)
+    const before = await db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.projectId, created.projectId))
+
+    await expect(
+      caller.projects.expandStart({
+        projectId: created.projectId,
+        parentNodeId: root.id,
+        operator: 'GROUND',
+      }),
+    ).rejects.toThrow(/^ROOT_NOT_EXPANDABLE: /)
+
+    const after = await db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.projectId, created.projectId))
+    expect(after).toHaveLength(before.length)
   })
 
   it('moves an expanded project ahead in project ordering, including empty runs', async () => {

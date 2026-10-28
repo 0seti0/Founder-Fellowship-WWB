@@ -1106,7 +1106,7 @@ class MockProvider implements ModelProvider {
   ) {
     if (!output || typeof output !== 'object') return
     const property =
-      task === 'frame'
+      task === 'frame' || task === 'expand'
         ? 'candidates'
         : task === 'evaluate'
           ? 'evaluations'
@@ -1126,7 +1126,7 @@ class MockProvider implements ModelProvider {
     const last = values[values.length - 1]
     if (!last || typeof last !== 'object') return
     const partialLast =
-      task === 'frame'
+      task === 'frame' || task === 'expand'
         ? {
             key: (last as Record<string, unknown>).key,
             title: (last as Record<string, unknown>).title,

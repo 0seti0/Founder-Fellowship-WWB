@@ -29,6 +29,7 @@ import {
   getProject,
   listProjects,
   projectOperatorOptions,
+  startExpansion,
   startInitial,
 } from '../generation/service'
 import {
@@ -207,6 +208,49 @@ export const appRouter = t.router({
               timeoutMs: env.MODEL_TIMEOUT_MS,
             })),
           }
+        } catch (error) {
+          throwServiceError(error)
+        }
+      }),
+    expandStart: t.procedure
+      .input(
+        z
+          .object({
+            projectId: z.string().uuid(),
+            parentNodeId: z.string().uuid(),
+            operator: UnaryOperatorSchema,
+            assumption: z.string().trim().min(1).optional(),
+            mockScenario: MockScenarioSchema.optional(),
+          })
+          .strict(),
+      )
+      .output(
+        z
+          .object({ projectId: z.string().uuid(), runId: z.string().uuid() })
+          .strict(),
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (input.mockScenario && env.MODEL_MODE !== 'mock') {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Mock scenarios are only available in mock mode',
+          })
+        }
+        try {
+          const { mockScenario, ...request } = input
+          const started = await startExpansion(ctx.getDatabase(), {
+            ...request,
+            mockScenario,
+            modelMode: env.MODEL_MODE,
+            timeoutMs: env.MODEL_TIMEOUT_MS,
+          })
+          void started.completion.catch(() => {
+            console.error('Background expansion completion rejected', {
+              projectId: started.projectId,
+              runId: started.runId,
+            })
+          })
+          return { projectId: started.projectId, runId: started.runId }
         } catch (error) {
           throwServiceError(error)
         }

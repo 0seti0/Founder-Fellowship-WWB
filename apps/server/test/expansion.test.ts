@@ -3,6 +3,7 @@ import {
   IdeaContentSchema,
   type ExtractedFact,
   type IdeaContent,
+  type RunProgress,
   type UnaryOperator,
 } from '@unfold/shared'
 import {
@@ -91,6 +92,66 @@ describe('operator expansion pipeline', () => {
     expect(
       new Set(dateContexts.map((value) => JSON.stringify(value))).size,
     ).toBe(1)
+  })
+
+  it('streams drafts, partial scores, and monotonic progress stages', async () => {
+    const { parent, facts } = await expansionContext()
+    const progress: RunProgress[] = []
+    const result = await expandPipeline({
+      operator: 'GROUND',
+      parent,
+      rootPrompt: prompt,
+      facts,
+      constraints: [],
+      provider: createModelProvider({ MODEL_MODE: 'mock' }),
+      timeoutMs,
+      onProgress: async (snapshot) => {
+        progress.push(snapshot)
+        if (
+          snapshot.stage === 'FRAMED' &&
+          snapshot.drafts === undefined &&
+          snapshot.partialScores === undefined
+        ) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 410))
+        }
+      },
+    })
+
+    const stageOrder = {
+      STARTED: 0,
+      EXTRACTED: 1,
+      FRAMED: 2,
+      EVALUATED: 3,
+      SELECTED: 4,
+    } as const
+    const stages = progress.map((snapshot) => stageOrder[snapshot.stage])
+    expect(stages).toEqual([...stages].sort((left, right) => left - right))
+
+    const draftIndex = progress.findIndex(
+      (snapshot) =>
+        snapshot.stage === 'EXTRACTED' && (snapshot.drafts?.length ?? 0) > 0,
+    )
+    const framedIndex = progress.findIndex(
+      (snapshot) =>
+        snapshot.stage === 'FRAMED' &&
+        snapshot.drafts === undefined &&
+        snapshot.partialScores === undefined,
+    )
+    const partialScoresIndex = progress.findIndex(
+      (snapshot) =>
+        snapshot.stage === 'FRAMED' &&
+        (snapshot.partialScores?.length ?? 0) > 0,
+    )
+    const evaluatedIndex = progress.findIndex(
+      (snapshot) => snapshot.stage === 'EVALUATED',
+    )
+
+    expect(draftIndex).toBeGreaterThanOrEqual(0)
+    expect(draftIndex).toBeLessThan(framedIndex)
+    expect(partialScoresIndex).toBeGreaterThan(framedIndex)
+    expect(partialScoresIndex).toBeLessThan(evaluatedIndex)
+    expect(progress.at(-1)?.stage).toBe('SELECTED')
+    expect(progress.at(-1)?.candidates).toHaveLength(result.candidates.length)
   })
 
   it.each(['GROUND', 'REFRAME', 'LEAP', 'INVERT', 'TRANSPLANT'] as const)(
