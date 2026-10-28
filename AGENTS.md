@@ -18,7 +18,7 @@ The persisted typed idea DAG is authoritative. Models propose schema-validated
 candidates; the backend checks deterministic preconditions and applies selected
 proposals through restricted transactional graph patches.
 
-See `docs/POSSIBILITY_ENGINE_SPEC.md` for the implemented pipeline and policy details.
+See `docs/UNFOLD_POSSIBILITY_ENGINE_SPEC.md` for the implemented pipeline and policy details.
 
 ### Extraction & hypotheses
 

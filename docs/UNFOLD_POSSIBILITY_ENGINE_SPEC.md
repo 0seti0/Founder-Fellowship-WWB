@@ -1,4 +1,4 @@
-# Unfold possibility engine
+# Unfold possibility engine spec
 
 ## Product kernel
 
