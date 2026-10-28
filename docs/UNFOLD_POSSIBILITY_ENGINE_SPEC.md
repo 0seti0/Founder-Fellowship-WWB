@@ -235,32 +235,41 @@ than human-calibrated measures.
 
 ## Live provider and environment
 
-The server-only provider is a thin fetch-based OpenAI-compatible adapter. It
-posts structured tasks to `{LLM_BASE_URL}/chat/completions`, using strict
-JSON-schema output when the task schema can be represented by the provider's
-strict subset, and otherwise uses `json_object` for that task. The pipeline
-still performs Zod validation and the existing single-repair flow. Unparseable
-message content is passed through as raw content for that validation path.
-Embeddings use `{LLM_BASE_URL}/embeddings`. Network/HTTP failures map to
+The server-only provider supports OpenAI-compatible chat completions and the
+native Anthropic Messages API. OpenAI-compatible structured tasks post to
+`{LLM_BASE_URL}/chat/completions`, using strict JSON-schema output when the
+task schema can be represented by the provider's strict subset, and otherwise
+use `json_object` for that task. Anthropic tasks post to
+`{LLM_BASE_URL}/messages` with the same task schema as a tool input schema and
+force the task-specific tool choice. The pipeline still performs Zod
+validation and the existing single-repair flow; unparseable or text-only
+message content is passed through as raw text for that validation path.
+OpenAI-compatible embeddings use `{LLM_BASE_URL}/embeddings`. Anthropic has no
+embedding endpoint, so its runs deduplicate in degraded word-overlap mode:
+normalized token-set Jaccard similarity at `0.8`, recorded as `TEXT_FALLBACK`.
+The experiment harness labels slate embedding similarity as unavailable and
+records null similarity values for Anthropic. Network/HTTP failures map to
 `PROVIDER_ERROR`; aborts map to `TIMEOUT`. Returned usage is attached to
 attempt metadata when present. The live path never silently falls back to
 mock.
 
 `LLM_API_KEY` is required only when `MODEL_MODE=live`. `MODEL_API_KEY` remains
 a deprecated fallback and produces a one-line warning without logging the
-value. Defaults are:
+value. `LLM_PROVIDER` defaults to `openai`; provider-specific defaults are:
 
-| Setting               | Default / use                                  |
-| --------------------- | ---------------------------------------------- |
-| `LLM_BASE_URL`        | `https://api.openai.com/v1`                    |
-| `LLM_MODEL_STRONG`    | `gpt-4.1` for frame, expansion, and evaluation |
-| `LLM_MODEL_FAST`      | `gpt-4.1-mini` for extraction and comparison   |
-| `LLM_EMBEDDING_MODEL` | `text-embedding-3-small`                       |
-| `LLM_TEMPERATURE`     | Optional; omitted unless configured            |
+| Setting               | OpenAI default / use                           | Anthropic default / use                              |
+| --------------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| `LLM_BASE_URL`        | `https://api.openai.com/v1`                    | `https://api.anthropic.com/v1`                       |
+| `LLM_MODEL_STRONG`    | `gpt-4.1` for frame, expansion, and evaluation | `claude-sonnet-4-5` for frame, expansion, evaluation |
+| `LLM_MODEL_FAST`      | `gpt-4.1-mini` for extraction and comparison   | `claude-haiku-4-5` for extraction and comparison     |
+| `LLM_EMBEDDING_MODEL` | `text-embedding-3-small`                       | Not used                                             |
+| `LLM_MAX_TOKENS`      | `4096` (not used by the adapter)               | `4096`                                               |
+| `LLM_TEMPERATURE`     | Optional; omitted unless configured            | Optional; omitted unless configured                  |
 
 Mock mode is the default for local tests and CI. Credentials remain on the
 server and are not included in request bodies, logs, or development experiment
-records.
+records. Experiment records include non-secret provider/model settings,
+`max_tokens`, and temperature.
 
 ## Calibration and limitations
 

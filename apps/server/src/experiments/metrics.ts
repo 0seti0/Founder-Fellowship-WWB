@@ -104,6 +104,7 @@ export function calculateExperimentMetrics(
       comparedPairs: comparisonCount,
     },
     slateEmbeddingSimilarity: {
+      status: slateSimilarities.length ? 'available' : 'unavailable',
       mean: mean(slateSimilarities),
       max: slateSimilarities.length ? Math.max(...slateSimilarities) : null,
       comparedPairs: slateSimilarities.length,

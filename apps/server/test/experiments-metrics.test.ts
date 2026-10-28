@@ -55,6 +55,7 @@ describe('experiment metrics', () => {
       comparedPairs: 4,
     })
     expect(metrics.slateEmbeddingSimilarity).toEqual({
+      status: 'available',
       mean: 0.6,
       max: 0.6,
       comparedPairs: 1,
@@ -73,8 +74,31 @@ describe('experiment metrics', () => {
         proportions: { equivalent: 0, related_but_distinct: 0, distinct: 0 },
         comparedPairs: 0,
       },
-      slateEmbeddingSimilarity: { mean: null, max: null, comparedPairs: 0 },
+      slateEmbeddingSimilarity: {
+        status: 'unavailable',
+        mean: null,
+        max: null,
+        comparedPairs: 0,
+      },
       meanQ: { allCandidates: null, selectedSlate: null },
+    })
+  })
+
+  it('labels missing slate embedding similarity as unavailable', () => {
+    const metrics = calculateExperimentMetrics(
+      [
+        { id: 'a', qualityScore: 0.8, eligibility: 'ELIGIBLE' },
+        { id: 'b', qualityScore: 0.6, eligibility: 'ELIGIBLE' },
+      ],
+      [],
+      ['a', 'b'],
+      [{ leftId: 'a', rightId: 'b', similarity: null }],
+    )
+    expect(metrics.slateEmbeddingSimilarity).toEqual({
+      status: 'unavailable',
+      mean: null,
+      max: null,
+      comparedPairs: 0,
     })
   })
 })

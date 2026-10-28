@@ -132,14 +132,14 @@ function textForCsv(value: string) {
 function providerConfiguration() {
   return {
     mode: env.MODEL_MODE,
-    baseUrl: process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1',
-    strongModel: process.env.LLM_MODEL_STRONG ?? 'gpt-4.1',
-    fastModel: process.env.LLM_MODEL_FAST ?? 'gpt-4.1-mini',
-    embeddingModel: process.env.LLM_EMBEDDING_MODEL ?? 'text-embedding-3-small',
-    temperature:
-      process.env.LLM_TEMPERATURE === undefined
-        ? null
-        : Number(process.env.LLM_TEMPERATURE),
+    provider: env.LLM_PROVIDER,
+    baseUrl: env.LLM_BASE_URL,
+    strongModel: env.LLM_MODEL_STRONG,
+    fastModel: env.LLM_MODEL_FAST,
+    embeddingModel:
+      env.LLM_PROVIDER === 'openai' ? env.LLM_EMBEDDING_MODEL : null,
+    maxTokens: env.LLM_MAX_TOKENS,
+    temperature: env.LLM_TEMPERATURE ?? null,
   }
 }
 

@@ -413,6 +413,22 @@ export class ProviderError extends Error {
   }
 }
 
+function taskSchema(request: StructuredGenerationRequest) {
+  return request.task === 'extract'
+    ? ExtractionOutputSchema
+    : request.task === 'frame'
+      ? request.promptVersion === SSOT_PROMPT_VERSION
+        ? SsotOutputSchema
+        : request.promptVersion === FRAME_SINGLE_PROMPT_VERSION
+          ? FrameSingleOutputSchema
+          : FrameOutputSchema
+      : request.task === 'evaluate'
+        ? EvaluateOutputV2Schema
+        : request.task === 'expand'
+          ? ExpandOutputSchema
+          : FunctionalEquivalenceOutputSchema
+}
+
 type ProviderEnvironment = Partial<typeof runtimeEnv> & {
   MODEL_MODE: ModelMode
 }
@@ -424,11 +440,15 @@ export function createModelProvider(
   if (environment.MODEL_MODE === 'mock') {
     return new MockProvider(opts.mockScenario ?? 'default')
   }
-  return new LiveProvider({ ...runtimeEnv, ...environment })
+  const configuration = liveConfiguration(environment)
+  return configuration.LLM_PROVIDER === 'anthropic'
+    ? new AnthropicProvider(configuration)
+    : new LiveProvider(configuration)
 }
 
 type LiveConfiguration = Pick<
   typeof runtimeEnv,
+  | 'LLM_PROVIDER'
   | 'LLM_API_KEY'
   | 'MODEL_API_KEY'
   | 'LLM_BASE_URL'
@@ -436,7 +456,57 @@ type LiveConfiguration = Pick<
   | 'LLM_MODEL_FAST'
   | 'LLM_EMBEDDING_MODEL'
   | 'LLM_TEMPERATURE'
+  | 'LLM_MAX_TOKENS'
 >
+
+function liveConfiguration(
+  environment: ProviderEnvironment,
+): LiveConfiguration {
+  const provider = environment.LLM_PROVIDER ?? runtimeEnv.LLM_PROVIDER
+  const defaults =
+    provider === 'anthropic'
+      ? {
+          baseUrl: 'https://api.anthropic.com/v1',
+          strongModel: 'claude-sonnet-4-5',
+          fastModel: 'claude-haiku-4-5',
+        }
+      : {
+          baseUrl: 'https://api.openai.com/v1',
+          strongModel: 'gpt-4.1',
+          fastModel: 'gpt-4.1-mini',
+        }
+  const inheritsRuntimeDefaults = provider === runtimeEnv.LLM_PROVIDER
+  return {
+    ...runtimeEnv,
+    ...environment,
+    LLM_PROVIDER: provider,
+    LLM_API_KEY: environment.LLM_API_KEY ?? runtimeEnv.LLM_API_KEY,
+    MODEL_API_KEY: environment.MODEL_API_KEY ?? runtimeEnv.MODEL_API_KEY,
+    LLM_BASE_URL:
+      environment.LLM_BASE_URL ??
+      (inheritsRuntimeDefaults ? runtimeEnv.LLM_BASE_URL : defaults.baseUrl),
+    LLM_MODEL_STRONG:
+      environment.LLM_MODEL_STRONG ??
+      (inheritsRuntimeDefaults
+        ? runtimeEnv.LLM_MODEL_STRONG
+        : defaults.strongModel),
+    LLM_MODEL_FAST:
+      environment.LLM_MODEL_FAST ??
+      (inheritsRuntimeDefaults
+        ? runtimeEnv.LLM_MODEL_FAST
+        : defaults.fastModel),
+    LLM_EMBEDDING_MODEL:
+      environment.LLM_EMBEDDING_MODEL ?? runtimeEnv.LLM_EMBEDDING_MODEL,
+    LLM_TEMPERATURE: environment.LLM_TEMPERATURE ?? runtimeEnv.LLM_TEMPERATURE,
+    LLM_MAX_TOKENS: environment.LLM_MAX_TOKENS ?? runtimeEnv.LLM_MAX_TOKENS,
+  }
+}
+
+function modelForTask(configuration: LiveConfiguration, task: GenerationTask) {
+  return task === 'frame' || task === 'expand' || task === 'evaluate'
+    ? configuration.LLM_MODEL_STRONG
+    : configuration.LLM_MODEL_FAST
+}
 
 class LiveProvider implements ModelProvider {
   readonly identity: { provider: string; model: string }
@@ -457,12 +527,7 @@ class LiveProvider implements ModelProvider {
         'PROVIDER_ERROR',
       )
     }
-    const model =
-      request.task === 'frame' ||
-      request.task === 'expand' ||
-      request.task === 'evaluate'
-        ? this.configuration.LLM_MODEL_STRONG
-        : this.configuration.LLM_MODEL_FAST
+    const model = modelForTask(this.configuration, request.task)
     const responseFormat = this.responseFormat(request)
     const body = {
       model,
@@ -552,22 +617,8 @@ class LiveProvider implements ModelProvider {
   }
 
   private responseFormat(request: StructuredGenerationRequest) {
-    const schema =
-      request.task === 'extract'
-        ? ExtractionOutputSchema
-        : request.task === 'frame'
-          ? request.promptVersion === SSOT_PROMPT_VERSION
-            ? SsotOutputSchema
-            : request.promptVersion === FRAME_SINGLE_PROMPT_VERSION
-              ? FrameSingleOutputSchema
-              : FrameOutputSchema
-          : request.task === 'evaluate'
-            ? EvaluateOutputV2Schema
-            : request.task === 'expand'
-              ? ExpandOutputSchema
-              : FunctionalEquivalenceOutputSchema
     try {
-      const jsonSchema = z.toJSONSchema(schema)
+      const jsonSchema = z.toJSONSchema(taskSchema(request))
       if (!supportsStrictJsonSchema(jsonSchema)) {
         return { type: 'json_object' }
       }
@@ -615,6 +666,142 @@ class LiveProvider implements ModelProvider {
       }
       throw new ProviderError(
         'OpenAI-compatible provider request failed',
+        'PROVIDER_ERROR',
+      )
+    }
+  }
+}
+
+type AnthropicContentBlock = {
+  type?: string
+  input?: unknown
+  text?: unknown
+}
+
+class AnthropicProvider implements ModelProvider {
+  readonly identity: { provider: string; model: string }
+
+  constructor(private readonly configuration: LiveConfiguration) {
+    this.identity = {
+      provider: 'anthropic',
+      model: configuration.LLM_MODEL_STRONG,
+    }
+  }
+
+  async generateStructured(request: StructuredGenerationRequest) {
+    const apiKey =
+      this.configuration.LLM_API_KEY ?? this.configuration.MODEL_API_KEY
+    if (!apiKey) {
+      throw new ProviderError(
+        'LLM_API_KEY is required for live model requests',
+        'PROVIDER_ERROR',
+      )
+    }
+    const model = modelForTask(this.configuration, request.task)
+    const toolName = `submit_${request.task}`
+    const inputSchema = {
+      ...(z.toJSONSchema(taskSchema(request)) as Record<string, unknown>),
+    }
+    delete inputSchema.$schema
+    const body = {
+      model,
+      max_tokens: this.configuration.LLM_MAX_TOKENS,
+      system: request.system,
+      messages: [{ role: 'user', content: JSON.stringify(request.input) }],
+      tools: [
+        {
+          name: toolName,
+          description: 'Return the result for this task.',
+          input_schema: inputSchema,
+        },
+      ],
+      tool_choice: { type: 'tool', name: toolName },
+      ...(this.configuration.LLM_TEMPERATURE === undefined
+        ? {}
+        : { temperature: this.configuration.LLM_TEMPERATURE }),
+    }
+    const envelope = (await this.requestJson(
+      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: request.signal,
+      },
+      request.signal,
+    )) as {
+      type?: string
+      error?: { type?: string }
+      content?: AnthropicContentBlock[]
+      usage?: { input_tokens?: number; output_tokens?: number }
+    }
+    if (envelope.type === 'error') {
+      const errorType = envelope.error?.type
+      throw new ProviderError(
+        `Anthropic provider returned an error${errorType ? ` (${errorType})` : ''}`,
+        'PROVIDER_ERROR',
+      )
+    }
+    if (
+      typeof envelope.usage?.input_tokens === 'number' &&
+      typeof envelope.usage.output_tokens === 'number'
+    ) {
+      request.onUsage?.({
+        input_tokens: envelope.usage.input_tokens,
+        output_tokens: envelope.usage.output_tokens,
+      })
+    }
+    if (!Array.isArray(envelope.content) || envelope.content.length === 0) {
+      throw new ProviderError(
+        'Anthropic provider returned no content',
+        'PROVIDER_ERROR',
+      )
+    }
+    const toolUse = envelope.content.find((block) => block.type === 'tool_use')
+    if (toolUse) return toolUse.input
+    return envelope.content
+      .filter(
+        (block) => block.type === 'text' && typeof block.text === 'string',
+      )
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('')
+  }
+
+  async embed(): Promise<number[][]> {
+    throw new ProviderError(
+      'Anthropic does not provide embeddings',
+      'PROVIDER_ERROR',
+    )
+  }
+
+  private async requestJson(
+    url: string,
+    init: RequestInit,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    try {
+      const response = await fetch(url, init)
+      if (!response.ok) {
+        throw new ProviderError(
+          `Anthropic provider returned HTTP ${response.status}`,
+          'PROVIDER_ERROR',
+        )
+      }
+      return await response.json()
+    } catch (error) {
+      if (error instanceof ProviderError) throw error
+      if (
+        signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw new ProviderError('Model request timed out', 'TIMEOUT')
+      }
+      throw new ProviderError(
+        'Anthropic provider request failed',
         'PROVIDER_ERROR',
       )
     }

@@ -41,12 +41,35 @@ describe('environment configuration', () => {
 
   it('uses the OpenAI-compatible defaults and validates temperature', () => {
     const parsed = parseEnv({})
+    expect(parsed.LLM_PROVIDER).toBe('openai')
     expect(parsed.LLM_BASE_URL).toBe('https://api.openai.com/v1')
     expect(parsed.LLM_MODEL_STRONG).toBe('gpt-4.1')
     expect(parsed.LLM_MODEL_FAST).toBe('gpt-4.1-mini')
     expect(parsed.LLM_EMBEDDING_MODEL).toBe('text-embedding-3-small')
+    expect(parsed.LLM_MAX_TOKENS).toBe(4096)
     expect(parseEnv({ LLM_TEMPERATURE: '0.3' }).LLM_TEMPERATURE).toBe(0.3)
     expect(() => parseEnv({ LLM_TEMPERATURE: '3' })).toThrow()
+  })
+
+  it('uses Anthropic defaults and accepts empty optional overrides', () => {
+    const parsed = parseEnv({
+      LLM_PROVIDER: 'anthropic',
+      LLM_BASE_URL: '',
+      LLM_MODEL_STRONG: '',
+      LLM_MODEL_FAST: '',
+      LLM_EMBEDDING_MODEL: '',
+      LLM_MAX_TOKENS: '',
+      LLM_TEMPERATURE: '',
+    })
+    expect(parsed.LLM_BASE_URL).toBe('https://api.anthropic.com/v1')
+    expect(parsed.LLM_MODEL_STRONG).toBe('claude-sonnet-4-5')
+    expect(parsed.LLM_MODEL_FAST).toBe('claude-haiku-4-5')
+    expect(parsed.LLM_MAX_TOKENS).toBe(4096)
+    expect(parsed.LLM_TEMPERATURE).toBeUndefined()
+    expect(
+      parseEnv({ LLM_PROVIDER: 'anthropic', LLM_MAX_TOKENS: '2048' })
+        .LLM_MAX_TOKENS,
+    ).toBe(2048)
   })
 
   it('does not include the key in health responses', async () => {

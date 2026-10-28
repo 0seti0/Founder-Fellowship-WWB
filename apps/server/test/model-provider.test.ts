@@ -3,6 +3,11 @@ import type { FrameCandidate } from '@unfold/shared'
 import { compareCandidates } from '../src/generation/functionalEquivalence'
 import { generatePipeline } from '../src/generation/pipeline'
 import {
+  EVALUATE_RUBRIC_PROMPT_VERSION,
+  EXTRACT_PROMPT_VERSION,
+  FRAME_AXIS_FREE_PROMPT_VERSION,
+} from '../src/generation/prompts'
+import {
   createModelProvider,
   ProviderError,
   type ModelProvider,
@@ -40,6 +45,70 @@ function liveProvider(): ModelProvider {
     LLM_MODEL_FAST: 'fast-test',
     LLM_EMBEDDING_MODEL: 'embed-test',
     LLM_TEMPERATURE: 0.2,
+  })
+}
+
+function anthropicProvider(
+  overrides: Record<string, unknown> = {},
+): ModelProvider {
+  return createModelProvider({
+    MODEL_MODE: 'live',
+    LLM_PROVIDER: 'anthropic',
+    LLM_API_KEY: apiKey,
+    LLM_BASE_URL: 'https://provider.example/v1',
+    LLM_MODEL_STRONG: 'claude-strong-test',
+    LLM_MODEL_FAST: 'claude-fast-test',
+    LLM_MAX_TOKENS: 2048,
+    LLM_TEMPERATURE: 0.2,
+    ...overrides,
+  })
+}
+
+function mockAnthropicFetch(options: { textFirstExtract?: boolean } = {}) {
+  const mockProvider = createModelProvider({ MODEL_MODE: 'mock' })
+  let extractCalls = 0
+  return vi.fn<typeof fetch>(async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      system: string
+      tools: Array<{ name: string }>
+      messages: Array<{ content: string }>
+    }
+    const task = body.tools[0]!.name.replace('submit_', '')
+    if (task === 'extract') {
+      extractCalls += 1
+      if (options.textFirstExtract && extractCalls === 1) {
+        return new Response(
+          JSON.stringify({
+            content: [{ type: 'text', text: 'not valid structured output' }],
+          }),
+          { status: 200 },
+        )
+      }
+    }
+    const promptVersion =
+      task === 'extract'
+        ? EXTRACT_PROMPT_VERSION
+        : task === 'frame'
+          ? FRAME_AXIS_FREE_PROMPT_VERSION
+          : task === 'evaluate'
+            ? EVALUATE_RUBRIC_PROMPT_VERSION
+            : 'functional-equivalence-v1'
+    const input = JSON.parse(body.messages[0]!.content) as unknown
+    const result = await mockProvider.generateStructured({
+      task: task as StructuredGenerationRequest['task'],
+      promptVersion,
+      schemaVersion: 'idea-schema-v2',
+      system: body.system,
+      input,
+      signal: init?.signal as AbortSignal,
+    })
+    return new Response(
+      JSON.stringify({
+        content: [{ type: 'tool_use', input: result }],
+        usage: { input_tokens: 5, output_tokens: 7 },
+      }),
+      { status: 200 },
+    )
   })
 }
 
@@ -282,6 +351,285 @@ describe('OpenAI-compatible live provider', () => {
               ?.total_tokens === 7,
         ),
     ).toBe(true)
+  })
+})
+
+describe('Anthropic live provider', () => {
+  it('uses the messages tool contract and keeps the key only in its header', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            content: [
+              {
+                type: 'tool_use',
+                name: 'submit_extract',
+                input: { facts: [] },
+              },
+            ],
+            usage: { input_tokens: 13, output_tokens: 5 },
+          }),
+          { status: 200 },
+        ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    let usage: Record<string, number> | undefined
+    const provider = anthropicProvider()
+    const result = await request(provider, {
+      onUsage: (value) => {
+        usage = value
+      },
+    })
+    expect(result).toEqual({ facts: [] })
+    expect(provider.identity).toEqual({
+      provider: 'anthropic',
+      model: 'claude-strong-test',
+    })
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://provider.example/v1/messages')
+    expect(init?.headers).toMatchObject({
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    })
+    const serializedBody = String(init?.body)
+    expect(serializedBody).not.toContain(apiKey)
+    expect(JSON.stringify(init?.headers)).toContain(apiKey)
+    const body = JSON.parse(serializedBody) as {
+      model: string
+      max_tokens: number
+      system: string
+      messages: Array<{ role: string; content: string }>
+      tools: Array<{
+        name: string
+        description: string
+        input_schema: Record<string, unknown>
+      }>
+      tool_choice: { type: string; name: string }
+      temperature: number
+    }
+    expect(body).toMatchObject({
+      model: 'claude-fast-test',
+      max_tokens: 2048,
+      system: 'Extract evidence.',
+      messages: [
+        {
+          role: 'user',
+          content: JSON.stringify({ prompt: 'A neighborhood bakery.' }),
+        },
+      ],
+      tools: [
+        {
+          name: 'submit_extract',
+          description: 'Return the result for this task.',
+        },
+      ],
+      tool_choice: { type: 'tool', name: 'submit_extract' },
+      temperature: 0.2,
+    })
+    expect(body.tools[0]?.input_schema).not.toHaveProperty('$schema')
+    expect(usage).toEqual({ input_tokens: 13, output_tokens: 5 })
+  })
+
+  it('uses provider-specific defaults when selected through createModelProvider', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ content: [{ type: 'tool_use', input: {} }] }),
+          { status: 200 },
+        ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = createModelProvider({
+      MODEL_MODE: 'live',
+      LLM_PROVIDER: 'anthropic',
+      LLM_API_KEY: apiKey,
+    })
+    await request(provider)
+    expect(provider.identity).toEqual({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    })
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://api.anthropic.com/v1/messages',
+    )
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      model: string
+      max_tokens: number
+    }
+    expect(body).toMatchObject({
+      model: 'claude-haiku-4-5',
+      max_tokens: 4096,
+    })
+  })
+
+  it('uses the strong model for framing, expansion, and evaluation', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ content: [{ type: 'tool_use', input: {} }] }),
+          { status: 200 },
+        ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = anthropicProvider()
+    for (const task of ['frame', 'expand', 'evaluate'] as const) {
+      await request(provider, {
+        task,
+        promptVersion:
+          task === 'frame' ? FRAME_AXIS_FREE_PROMPT_VERSION : `${task}-v1`,
+      })
+    }
+    for (const [index, task] of ['frame', 'expand', 'evaluate'].entries()) {
+      const body = JSON.parse(
+        String(fetchMock.mock.calls[index]?.[1]?.body),
+      ) as { model: string }
+      expect(body.model, task).toBe('claude-strong-test')
+    }
+  })
+
+  it('uses the fast model for extraction and comparison', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ content: [{ type: 'tool_use', input: {} }] }),
+          { status: 200 },
+        ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = anthropicProvider()
+    for (const task of ['extract', 'compare'] as const) {
+      await request(provider, { task, promptVersion: `${task}-v1` })
+    }
+    for (const [index, task] of ['extract', 'compare'].entries()) {
+      const body = JSON.parse(
+        String(fetchMock.mock.calls[index]?.[1]?.body),
+      ) as { model: string }
+      expect(body.model, task).toBe('claude-fast-test')
+    }
+  })
+
+  it('maps HTTP and Anthropic error responses to PROVIDER_ERROR', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('mock content', { status: 500 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            type: 'error',
+            error: { type: 'overloaded_error', message: 'try again' },
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = anthropicProvider()
+    await expect(request(provider)).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+    })
+    await expect(request(provider)).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: expect.stringContaining('overloaded_error'),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps network errors to a safe PROVIDER_ERROR', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      throw new Error(`connection failed: ${apiKey}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(request(anthropicProvider())).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: 'Anthropic provider request failed',
+    })
+  })
+
+  it('maps aborted requests to TIMEOUT', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      throw new DOMException('Aborted', 'AbortError')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      request(anthropicProvider(), { signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'TIMEOUT' })
+  })
+
+  it('returns concatenated text when the response has no tool use', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            content: [
+              { type: 'text', text: 'first ' },
+              { type: 'text', text: 'second' },
+            ],
+          }),
+          { status: 200 },
+        ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(request(anthropicProvider())).resolves.toBe('first second')
+  })
+
+  it('rejects responses with no content', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ content: [] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(request(anthropicProvider())).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+    })
+  })
+
+  it('repairs text-only output once and falls back to degraded text deduplication', async () => {
+    const fetchMock = mockAnthropicFetch({ textFirstExtract: true })
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await generatePipeline({
+      prompt: 'I want to open a bakery for nearby families.',
+      provider: anthropicProvider(),
+      timeoutMs: 1000,
+      strategy: 'JOINT_AXIS_FREE_V1',
+      explorationSeed: 'anthropic-fallback-test',
+    })
+    expect(
+      result.attempts
+        .filter((attempt) => attempt.task === 'extract')
+        .map((attempt) => attempt.ok),
+    ).toEqual([false, true])
+    expect(
+      result.attempts.find(
+        (attempt) => attempt.task === 'extract' && attempt.ok,
+      )?.metadata?.usage,
+    ).toEqual({ input_tokens: 5, output_tokens: 7 })
+    expect(result.dedupMode).toBe('TEXT_FALLBACK')
+    expect(result.degraded).toBe(true)
+    expect(
+      result.attempts.some(
+        (attempt) =>
+          attempt.task === 'dedupe' && attempt.code === 'TEXT_FALLBACK',
+      ),
+    ).toBe(true)
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => {
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ name: string }>
+        }
+        return body.tools[0]?.name === 'submit_extract'
+      }),
+    ).toHaveLength(2)
+  })
+
+  it('throws the existing provider error code for unavailable embeddings', async () => {
+    await expect(
+      anthropicProvider().embed(['candidate text'], AbortSignal.timeout(1000)),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: 'Anthropic does not provide embeddings',
+    })
   })
 })
 
