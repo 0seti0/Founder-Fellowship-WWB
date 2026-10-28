@@ -10,6 +10,7 @@ export default defineConfig({
   globalSetup: './e2e/global-setup.ts',
   use: {
     baseURL: webUrl,
+    trace: 'retain-on-failure',
   },
   projects: [
     {

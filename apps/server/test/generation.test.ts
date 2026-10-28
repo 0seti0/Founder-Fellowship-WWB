@@ -257,13 +257,17 @@ describe('initial generation pipeline', () => {
       },
     })
 
-    expect(progress.map((snapshot) => snapshot.stage)).toEqual([
+    const stages = progress.filter(
+      (snapshot) =>
+        snapshot.drafts === undefined && snapshot.partialScores === undefined,
+    )
+    expect(stages.map((snapshot) => snapshot.stage)).toEqual([
       'EXTRACTED',
       'FRAMED',
       'EVALUATED',
       'SELECTED',
     ])
-    const framed = progress.find((snapshot) => snapshot.stage === 'FRAMED')!
+    const framed = stages.find((snapshot) => snapshot.stage === 'FRAMED')!
     expect(framed.candidates).toHaveLength(result.candidates.length)
     expect(
       framed.candidates.every(
@@ -279,7 +283,7 @@ describe('initial generation pipeline', () => {
       ),
     ).toBe(true)
 
-    const selected = progress.find((snapshot) => snapshot.stage === 'SELECTED')!
+    const selected = stages.find((snapshot) => snapshot.stage === 'SELECTED')!
     expect(
       selected.candidates.map(({ key, displayPosition }) => [
         key,
@@ -290,6 +294,61 @@ describe('initial generation pipeline', () => {
         candidate.content.key,
         candidate.displayPosition,
       ]),
+    )
+  })
+
+  it('streams frame drafts and partial scores without regressing stages', async () => {
+    const progress: RunProgress[] = []
+    await generatePipeline({
+      prompt,
+      provider: createModelProvider({ MODEL_MODE: 'mock' }),
+      timeoutMs,
+      onProgress: async (snapshot) => {
+        progress.push(snapshot)
+        if (
+          snapshot.stage === 'FRAMED' &&
+          snapshot.drafts === undefined &&
+          snapshot.partialScores === undefined
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 410))
+        }
+      },
+    })
+
+    const stageOrder = {
+      STARTED: 0,
+      EXTRACTED: 1,
+      FRAMED: 2,
+      EVALUATED: 3,
+      SELECTED: 4,
+    } as const
+    const indexes = progress.map((snapshot) => stageOrder[snapshot.stage])
+    expect(indexes).toEqual([...indexes].sort((left, right) => left - right))
+
+    const firstFramed = progress.findIndex(
+      (snapshot) =>
+        snapshot.stage === 'FRAMED' &&
+        snapshot.drafts === undefined &&
+        snapshot.partialScores === undefined,
+    )
+    const draftIndex = progress.findIndex((snapshot) => snapshot.drafts)
+    expect(draftIndex).toBeGreaterThanOrEqual(0)
+    expect(draftIndex).toBeLessThan(firstFramed)
+    expect(progress[draftIndex]?.drafts?.length).toBeGreaterThan(0)
+
+    const evaluatedIndex = progress.findIndex(
+      (snapshot) =>
+        snapshot.stage === 'EVALUATED' &&
+        snapshot.drafts === undefined &&
+        snapshot.partialScores === undefined,
+    )
+    const partialScoreIndex = progress.findIndex(
+      (snapshot) => snapshot.partialScores !== undefined,
+    )
+    expect(partialScoreIndex).toBeGreaterThan(firstFramed)
+    expect(partialScoreIndex).toBeLessThan(evaluatedIndex)
+    expect(progress[partialScoreIndex]?.partialScores?.length).toBeGreaterThan(
+      0,
     )
   })
 

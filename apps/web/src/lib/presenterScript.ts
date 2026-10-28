@@ -75,6 +75,8 @@ export type PresenterCandidate = {
 
 export type PresenterItem = { ref: string; text: string; evidence: string }
 
+export type PresenterDraft = { ordinal: number; title: string }
+
 export type PresenterScript = {
   prompt: string
   segments: PromptSegment[]
@@ -85,6 +87,8 @@ export type PresenterScript = {
   modelLabel: string
   policyVersion: string
   rubricVersion: string | null
+  drafts: PresenterDraft[]
+  partialChecks: Record<string, PresenterCheck[]>
 }
 
 const RUBRIC_CHECKS = [
@@ -171,15 +175,34 @@ export function scriptFromProgress(
       },
     }),
   )
+  const script = assembleScript(
+    meta,
+    progress?.facts ?? [],
+    progress?.constraints ?? [],
+    candidates,
+  )
+  script.drafts = (progress?.drafts ?? []).map((draft) => ({
+    ordinal: draft.ordinal,
+    title: draft.title,
+  }))
+  script.partialChecks = Object.fromEntries(
+    (progress?.partialScores ?? []).map((entry) => [
+      entry.candidateKey,
+      RUBRIC_CHECKS.flatMap(([key, label]) => {
+        const score = entry.scores[key]
+        if (score === undefined) return []
+        return [{ key, label, state: scoreState(score) }]
+      }),
+    ]),
+  )
   return {
-    script: assembleScript(
-      meta,
-      progress?.facts ?? [],
-      progress?.constraints ?? [],
-      candidates,
-    ),
+    script,
     level: progress ? STAGE_LEVELS[progress.stage] : 0,
   }
+}
+
+function scoreState(score: number): CheckState {
+  return score === 2 ? 'ok' : score === 1 ? 'mid' : 'bad'
 }
 
 function assembleScript(
@@ -216,6 +239,8 @@ function assembleScript(
     modelLabel: meta.modelLabel,
     policyVersion: meta.policyVersion,
     rubricVersion: meta.rubricVersion,
+    drafts: [],
+    partialChecks: {},
   }
 }
 
@@ -332,11 +357,7 @@ function qualityChecks(quality: CandidateDto['quality']): PresenterCheck[] {
   if ('criteria' in quality) {
     return RUBRIC_CHECKS.map(([key, label]) => {
       const score = quality.criteria[key].score
-      return {
-        key,
-        label,
-        state: score === 2 ? 'ok' : score === 1 ? 'mid' : 'bad',
-      }
+      return { key, label, state: scoreState(score) }
     })
   }
   return LEGACY_CHECKS.map(([key, label]) => {

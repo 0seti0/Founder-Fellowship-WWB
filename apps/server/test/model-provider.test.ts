@@ -71,6 +71,7 @@ function mockAnthropicFetch(options: { textFirstExtract?: boolean } = {}) {
   return vi.fn<typeof fetch>(async (_input, init) => {
     const body = JSON.parse(String(init?.body)) as {
       system: string
+      stream?: boolean
       tools: Array<{ name: string }>
       messages: Array<{ content: string }>
     }
@@ -103,6 +104,30 @@ function mockAnthropicFetch(options: { textFirstExtract?: boolean } = {}) {
       input,
       signal: init?.signal as AbortSignal,
     })
+    if (body.stream) {
+      return anthropicSseResponse([
+        { type: 'message_start', message: { usage: { input_tokens: 5 } } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify(result),
+          },
+        },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: { output_tokens: 7 },
+        },
+        { type: 'message_stop' },
+      ])
+    }
     return new Response(
       JSON.stringify({
         content: [{ type: 'tool_use', input: result }],
@@ -126,6 +151,30 @@ function request(
     signal: AbortSignal.timeout(1000),
     ...overrides,
   })
+}
+
+function anthropicSseResponse(
+  events: unknown[],
+  splitAfter?: string,
+): Response {
+  const streamText = events
+    .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join('')
+  const bytes = new TextEncoder().encode(streamText)
+  const splitAt =
+    splitAfter === undefined
+      ? Math.floor(bytes.length / 2)
+      : streamText.indexOf(splitAfter) + 2
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, splitAt))
+        controller.enqueue(bytes.slice(splitAt))
+        controller.close()
+      },
+    }),
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  )
 }
 
 afterEach(() => {
@@ -356,6 +405,155 @@ describe('OpenAI-compatible live provider', () => {
 })
 
 describe('Anthropic live provider', () => {
+  it('streams tool input with partial callbacks and usage across split SSE chunks', async () => {
+    let now = 1000
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      now += 250
+      return now
+    })
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      anthropicSseResponse(
+        [
+          { type: 'message_start', message: { usage: { input_tokens: 13 } } },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'tool-1', input: {} },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: '{"candidates":[{"key":"k1","title":"Alpha"',
+            },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: ',"summary":"Useful."}]}',
+            },
+          },
+          {
+            type: 'message_delta',
+            delta: { stop_reason: 'tool_use' },
+            usage: { output_tokens: 7 },
+          },
+          { type: 'message_stop' },
+        ],
+        'Alpha',
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const partials: unknown[] = []
+    let usage: Record<string, number> | undefined
+    const result = await request(anthropicProvider(), {
+      task: 'frame',
+      promptVersion: FRAME_AXIS_FREE_PROMPT_VERSION,
+      onPartial: (partial) => {
+        partials.push(partial)
+        if (partials.length === 1) throw new Error('ignore partial failure')
+      },
+      onUsage: (value) => {
+        usage = value
+      },
+    })
+
+    expect(result).toEqual({
+      candidates: [{ key: 'k1', title: 'Alpha', summary: 'Useful.' }],
+    })
+    expect(partials).toHaveLength(2)
+    expect(partials[0]).toMatchObject({
+      candidates: [{ key: 'k1', title: 'Alpha' }],
+    })
+    expect(partials[1]).toEqual(result)
+    expect(usage).toEqual({ input_tokens: 13, output_tokens: 7 })
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)),
+    ).toMatchObject({ stream: true })
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14',
+    })
+  })
+
+  it('rejects streamed max-token truncation after reporting usage', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      anthropicSseResponse([
+        { type: 'message_start', message: { usage: { input_tokens: 13 } } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', input: {} },
+        },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'max_tokens' },
+          usage: { output_tokens: 2048 },
+        },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    let usage: Record<string, number> | undefined
+    await expect(
+      request(anthropicProvider(), {
+        onPartial: () => undefined,
+        onUsage: (value) => {
+          usage = value
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message:
+        'Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=2048)',
+    })
+    expect(usage).toEqual({ input_tokens: 13, output_tokens: 2048 })
+  })
+
+  it('rejects a stream that ends before message_stop', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      anthropicSseResponse([
+        { type: 'message_start', message: { usage: { input_tokens: 13 } } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"facts":[]}' },
+        },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      request(anthropicProvider(), { onPartial: () => undefined }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: 'Anthropic stream ended before message_stop',
+    })
+  })
+
+  it('surfaces Anthropic stream error event types', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      anthropicSseResponse([
+        {
+          type: 'error',
+          error: { type: 'overloaded_error', message: 'try again' },
+        },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      request(anthropicProvider(), { onPartial: () => undefined }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: expect.stringContaining('overloaded_error'),
+    })
+  })
+
   it('uses the messages tool contract and keeps the key only in its header', async () => {
     const fetchMock = vi.fn<typeof fetch>(
       async () =>
@@ -393,6 +591,7 @@ describe('Anthropic live provider', () => {
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     })
+    expect(init?.headers).not.toHaveProperty('anthropic-beta')
     const serializedBody = String(init?.body)
     expect(serializedBody).not.toContain(apiKey)
     expect(JSON.stringify(init?.headers)).toContain(apiKey)

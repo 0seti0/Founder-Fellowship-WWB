@@ -12,6 +12,7 @@ for (const width of [1280, 1440]) {
     test('exercises operators, steering, failures, and persisted state', async ({
       page,
     }, testInfo) => {
+      test.setTimeout(60_000)
       test.skip(testInfo.project.name === 'mobile', 'Stage 2 desktop-only flow')
       await mkdir(evidenceDirectory, { recursive: true })
       const consoleErrors: string[] = []

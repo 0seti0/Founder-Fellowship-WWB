@@ -54,3 +54,11 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter @unfold/web exec playwright install --with-deps chromium
       - run: pnpm test:e2e
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
