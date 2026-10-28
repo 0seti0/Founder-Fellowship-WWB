@@ -303,7 +303,8 @@ describe('OpenAI-compatible live provider', () => {
     vi.stubGlobal('fetch', fetchMock)
     await expect(request(liveProvider())).rejects.toMatchObject({
       code: 'PROVIDER_ERROR',
-      message: 'OpenAI-compatible provider request failed',
+      message:
+        'OpenAI-compatible provider request failed (Error: connection failed: [REDACTED])',
     })
   })
 
@@ -509,6 +510,42 @@ describe('Anthropic live provider', () => {
         'Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=2048)',
     })
     expect(usage).toEqual({ input_tokens: 13, output_tokens: 2048 })
+  })
+
+  it('includes sanitized reader failure details for a broken stream', async () => {
+    const transportError = Object.assign(new TypeError('terminated'), {
+      cause: Object.assign(new Error('other side closed'), {
+        code: 'UND_ERR_SOCKET',
+      }),
+    })
+    const reader = {
+      read: vi
+        .fn()
+        .mockResolvedValueOnce({
+          done: false as const,
+          value: new TextEncoder().encode(
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":13}}}\n\n',
+          ),
+        })
+        .mockRejectedValueOnce(transportError),
+      releaseLock: vi.fn(),
+    }
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        ({
+          ok: true,
+          body: { getReader: () => reader },
+        }) as unknown as Response,
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = request(anthropicProvider(), { onPartial: () => undefined })
+    await expect(result).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: expect.stringContaining('terminated'),
+    })
+    await expect(result).rejects.toThrow('UND_ERR_SOCKET')
+    await expect(result).rejects.toThrow('other side closed')
   })
 
   it('rejects a stream that ends before message_stop', async () => {
@@ -769,7 +806,8 @@ describe('Anthropic live provider', () => {
     vi.stubGlobal('fetch', fetchMock)
     await expect(request(anthropicProvider())).rejects.toMatchObject({
       code: 'PROVIDER_ERROR',
-      message: 'Anthropic provider request failed',
+      message:
+        'Anthropic provider request failed (Error: connection failed: [REDACTED])',
     })
   })
 

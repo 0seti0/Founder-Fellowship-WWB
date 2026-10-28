@@ -248,6 +248,62 @@ function progressItems(spans: EvidenceSpan[]): ProgressItem[] {
   }))
 }
 
+function draftsFromPartial(partial: unknown) {
+  const rawCandidates =
+    partial &&
+    typeof partial === 'object' &&
+    Array.isArray((partial as { candidates?: unknown }).candidates)
+      ? (partial as { candidates: unknown[] }).candidates
+      : []
+  return rawCandidates.flatMap((value, index) => {
+    if (!value || typeof value !== 'object') return []
+    const entry = value as Record<string, unknown>
+    if (typeof entry.title !== 'string' || !entry.title.trim()) return []
+    return [
+      {
+        ordinal: index + 1,
+        title: entry.title,
+        summary: typeof entry.summary === 'string' ? entry.summary : null,
+      },
+    ]
+  })
+}
+
+function partialScoresFromPartial(partial: unknown) {
+  const rawEvaluations =
+    partial &&
+    typeof partial === 'object' &&
+    Array.isArray((partial as { evaluations?: unknown }).evaluations)
+      ? (partial as { evaluations: unknown[] }).evaluations
+      : []
+  const criterionKeys = [
+    'intentCompatibility',
+    'decisionUsefulness',
+    'specificityCoherence',
+    'firstTestExecutability',
+    'nonObviousness',
+  ] as const
+  return rawEvaluations.flatMap((value) => {
+    if (!value || typeof value !== 'object') return []
+    const entry = value as Record<string, unknown>
+    if (typeof entry.candidateKey !== 'string') return []
+    const scores: Partial<Record<(typeof criterionKeys)[number], number>> = {}
+    for (const key of criterionKeys) {
+      const criterion = entry[key]
+      if (
+        criterion &&
+        typeof criterion === 'object' &&
+        Number.isInteger((criterion as { score?: unknown }).score) &&
+        (criterion as { score: number }).score >= 0 &&
+        (criterion as { score: number }).score <= 2
+      ) {
+        scores[key] = (criterion as { score: number }).score
+      }
+    }
+    return [{ candidateKey: entry.candidateKey, scores }]
+  })
+}
+
 function framedProgressCandidate(
   content: FrameCandidate,
   ordinal: number,
@@ -399,30 +455,12 @@ export async function generatePipeline({
     currentDate,
     explorationSeed,
     (partial) => {
-      const rawCandidates =
-        partial &&
-        typeof partial === 'object' &&
-        Array.isArray((partial as { candidates?: unknown }).candidates)
-          ? (partial as { candidates: unknown[] }).candidates
-          : []
-      const drafts = rawCandidates.flatMap((value, index) => {
-        if (!value || typeof value !== 'object') return []
-        const entry = value as Record<string, unknown>
-        if (typeof entry.title !== 'string' || !entry.title.trim()) return []
-        return [
-          {
-            ordinal: index + 1,
-            title: entry.title,
-            summary: typeof entry.summary === 'string' ? entry.summary : null,
-          },
-        ]
-      })
       progress.partial({
         stage: 'EXTRACTED',
         facts: factsProgress,
         constraints: constraintsProgress,
         candidates: [],
-        drafts,
+        drafts: draftsFromPartial(partial),
       })
     },
   )
@@ -444,40 +482,10 @@ export async function generatePipeline({
     attempts,
     currentDate,
     (partial) => {
-      const rawEvaluations =
-        partial &&
-        typeof partial === 'object' &&
-        Array.isArray((partial as { evaluations?: unknown }).evaluations)
-          ? (partial as { evaluations: unknown[] }).evaluations
-          : []
-      const criterionKeys = [
-        'intentCompatibility',
-        'decisionUsefulness',
-        'specificityCoherence',
-        'firstTestExecutability',
-        'nonObviousness',
-      ] as const
-      const partialScores = rawEvaluations.flatMap((value) => {
-        if (!value || typeof value !== 'object') return []
-        const entry = value as Record<string, unknown>
-        if (typeof entry.candidateKey !== 'string') return []
-        const scores: Partial<Record<(typeof criterionKeys)[number], number>> =
-          {}
-        for (const key of criterionKeys) {
-          const criterion = entry[key]
-          if (
-            criterion &&
-            typeof criterion === 'object' &&
-            Number.isInteger((criterion as { score?: unknown }).score) &&
-            (criterion as { score: number }).score >= 0 &&
-            (criterion as { score: number }).score <= 2
-          ) {
-            scores[key] = (criterion as { score: number }).score
-          }
-        }
-        return [{ candidateKey: entry.candidateKey, scores }]
+      progress.partial({
+        ...framedProgress,
+        partialScores: partialScoresFromPartial(partial),
       })
-      progress.partial({ ...framedProgress, partialScores })
     },
   )
   return completePipeline({
@@ -518,6 +526,7 @@ export async function expandPipeline(options: {
   provider: ModelProvider
   timeoutMs: number
   currentDate?: CurrentDateContext
+  onProgress?: PipelineOptions['onProgress']
   existingChildren?: Array<{
     id: string
     title: string
@@ -526,8 +535,25 @@ export async function expandPipeline(options: {
   }>
 }) {
   const currentDate = options.currentDate ?? currentDateContext()
+  const progress = createProgressEmitter(options.onProgress)
   const attempts: PipelineAttempt[] = []
   const definition = OPERATOR_REGISTRY[options.operator]
+  const facts: EvidenceSpan[] = options.facts.map((item) => ({
+    id: options.factIds?.get(item.ref) ?? randomUUID(),
+    item,
+    start: 0,
+    end: 0,
+  }))
+  const constraints: EvidenceSpan[] = options.constraints.map(
+    (item, index) => ({
+      id: `constraint-${index}`,
+      item,
+      start: 0,
+      end: 0,
+    }),
+  )
+  const factsProgress = progressItems(facts)
+  const constraintsProgress = progressItems(constraints)
   let content: IdeaContent[] | undefined
   let effectRejections = new Map<string, string[]>()
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -550,6 +576,15 @@ export async function expandPipeline(options: {
           assumption: options.assumption,
           mechanism: options.mechanism,
           count: 6,
+        },
+        onPartial: (partial) => {
+          progress.partial({
+            stage: 'EXTRACTED',
+            facts: factsProgress,
+            constraints: constraintsProgress,
+            candidates: [],
+            drafts: draftsFromPartial(partial),
+          })
         },
       },
       options.timeoutMs,
@@ -618,6 +653,15 @@ export async function expandPipeline(options: {
         attempts,
       )
   }
+  const framedProgress = {
+    stage: 'FRAMED',
+    facts: factsProgress,
+    constraints: constraintsProgress,
+    candidates: content!.map((candidate, index) =>
+      framedProgressCandidate(candidate, index + 1),
+    ),
+  } satisfies RunProgress
+  await progress.stage(framedProgress)
   const evaluations = await evaluateV2(
     content!,
     options.rootPrompt,
@@ -626,20 +670,16 @@ export async function expandPipeline(options: {
     options.timeoutMs,
     attempts,
     currentDate,
+    (partial) => {
+      progress.partial({
+        ...framedProgress,
+        partialScores: partialScoresFromPartial(partial),
+      })
+    },
   )
   return completePipeline({
-    facts: options.facts.map((item) => ({
-      id: options.factIds?.get(item.ref) ?? randomUUID(),
-      item,
-      start: 0,
-      end: 0,
-    })),
-    constraints: options.constraints.map((item, index) => ({
-      id: `constraint-${index}`,
-      item,
-      start: 0,
-      end: 0,
-    })),
+    facts,
+    constraints,
     frameCandidates: content!,
     evaluations,
     provider: options.provider,
@@ -652,6 +692,8 @@ export async function expandPipeline(options: {
     additionalRejectionReasons: effectRejections,
     strategy: 'JOINT_AXIS_FREE_V1',
     generationMeta: {},
+    onProgress: options.onProgress,
+    progress,
   })
 }
 

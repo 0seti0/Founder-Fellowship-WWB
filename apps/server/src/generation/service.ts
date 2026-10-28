@@ -1,4 +1,5 @@
 import {
+  type ExtractedFact,
   type ExtractedConstraint,
   type MockScenario,
   type ProjectDto,
@@ -25,7 +26,11 @@ import {
   promptItems,
 } from '../db/schema'
 import type { ModelMode } from '@unfold/shared'
-import { createModelProvider, ProviderError } from '../model/provider'
+import {
+  createModelProvider,
+  ProviderError,
+  type ModelProvider,
+} from '../model/provider'
 import { applyGraphPatch, GraphPatchError } from '../graph/patch'
 import {
   EXPANSION_SELECTION_POLICY_VERSION,
@@ -416,17 +421,36 @@ export async function projectOperatorOptions(
   )
 }
 
-export async function expandNode(
+type ExpansionOptions = {
+  projectId: string
+  parentNodeId: string
+  operator: UnaryOperator
+  assumption?: string
+  mockScenario?: MockScenario
+  modelMode: ModelMode
+  timeoutMs: number
+}
+
+type ExpansionExecutionOptions = {
+  runId: string
+  projectId: string
+  parent: typeof nodes.$inferSelect
+  rootPrompt: string
+  operator: UnaryOperator
+  facts: ExtractedFact[]
+  constraints: ExtractedConstraint[]
+  factIdByRef: Map<string, string>
+  trustedAssumption?: string
+  suitabilityScore: number
+  planningMetadata: Record<string, unknown>
+  provider: ModelProvider
+  timeoutMs: number
+  currentDate: CurrentDateContext
+}
+
+export async function beginExpansion(
   connection: DatabaseConnection,
-  options: {
-    projectId: string
-    parentNodeId: string
-    operator: UnaryOperator
-    assumption?: string
-    mockScenario?: MockScenario
-    modelMode: ModelMode
-    timeoutMs: number
-  },
+  options: ExpansionOptions,
 ) {
   const { db } = connection
   const [project] = await db
@@ -560,7 +584,84 @@ export async function expandNode(
     mockScenario: options.mockScenario ?? null,
     startedAt,
     finishedAt: null,
+    progress: {
+      stage: 'STARTED',
+      facts: [],
+      constraints: [],
+      candidates: [],
+    },
   })
+  return {
+    runId,
+    projectId: options.projectId,
+    parent,
+    rootPrompt: project.originalPrompt,
+    operator: options.operator,
+    facts,
+    constraints,
+    factIdByRef: new Map(
+      promptRows
+        .filter((item) => item.kind === 'FACT')
+        .map((item) => [item.ref, item.id]),
+    ),
+    trustedAssumption,
+    suitabilityScore: suitability.score,
+    planningMetadata,
+    provider,
+    timeoutMs: options.timeoutMs,
+    currentDate,
+  } satisfies ExpansionExecutionOptions
+}
+
+export async function startExpansion(
+  connection: DatabaseConnection,
+  options: ExpansionOptions,
+) {
+  const started = await beginExpansion(connection, options)
+  const completion = executeExpansion(connection, started).then(
+    () => undefined,
+    () => {
+      try {
+        console.error('Background expansion failed', { runId: started.runId })
+      } catch {}
+    },
+  )
+  return {
+    projectId: started.projectId,
+    runId: started.runId,
+    completion,
+  }
+}
+
+export async function expandNode(
+  connection: DatabaseConnection,
+  options: ExpansionOptions,
+) {
+  const started = await beginExpansion(connection, options)
+  return executeExpansion(connection, started)
+}
+
+export async function executeExpansion(
+  connection: DatabaseConnection,
+  options: ExpansionExecutionOptions,
+) {
+  const { db } = connection
+  const {
+    runId,
+    projectId,
+    parent,
+    rootPrompt,
+    operator,
+    facts,
+    constraints,
+    factIdByRef,
+    trustedAssumption,
+    suitabilityScore,
+    planningMetadata,
+    provider,
+    timeoutMs,
+    currentDate,
+  } = options
   let attempts: PipelineAttempt[] = []
   try {
     const existingChildren = await db
@@ -568,23 +669,18 @@ export async function expandNode(
       .from(edges)
       .innerJoin(nodes, eq(nodes.id, edges.childId))
       .where(eq(edges.parentId, parent.id))
-    const factIdByRef = new Map(
-      promptRows
-        .filter((item) => item.kind === 'FACT')
-        .map((item) => [item.ref, item.id]),
-    )
     const pipeline = await expandPipeline({
-      operator: options.operator,
+      operator,
       parent: parent.content as IdeaContent,
-      rootPrompt: project.originalPrompt,
+      rootPrompt,
       facts,
       factIds: factIdByRef,
       constraints,
       assumption: trustedAssumption,
       mechanism: String(parent.content.mechanism ?? ''),
-      suitabilityScore: suitability.score,
+      suitabilityScore,
       provider,
-      timeoutMs: options.timeoutMs,
+      timeoutMs,
       currentDate,
       existingChildren: existingChildren.map(({ node }) => ({
         id: node.id,
@@ -592,20 +688,33 @@ export async function expandNode(
         summary: node.summary,
         mechanism: String((node.content as IdeaContent).mechanism ?? ''),
       })),
+      onProgress: async (progress) => {
+        try {
+          await db
+            .update(generationRuns)
+            .set({ progress })
+            .where(eq(generationRuns.id, runId))
+        } catch {
+          console.error('Unable to persist generation progress', {
+            runId,
+            stage: progress.stage,
+          })
+        }
+      },
     })
     attempts = pipeline.attempts
     await db.transaction(async (tx) => {
       for (const candidate of pipeline.candidates) {
         await tx.insert(candidates).values({
           id: candidate.id,
-          projectId: options.projectId,
+          projectId,
           runId,
           ordinal: candidate.ordinal,
           modelKey: candidate.content.key,
           content: candidate.content,
-          operator: options.operator,
+          operator,
           operatorRegistryVersion: OPERATOR_REGISTRY_VERSION,
-          suitabilityScore: suitability.score,
+          suitabilityScore,
           planningMetadata,
           constraintEvaluations: candidate.evaluation.constraints,
           quality: qualityForCandidate(candidate),
@@ -634,7 +743,7 @@ export async function expandNode(
         })
         await tx.insert(hypotheses).values({
           id: randomUUID(),
-          projectId: options.projectId,
+          projectId,
           runId,
           candidateId: candidate.id,
           statement: candidate.content.hypothesis.statement,
@@ -661,10 +770,10 @@ export async function expandNode(
       .filter((candidate) => candidate.selectionState === 'SELECTED')
       .sort((left, right) => left.displayPosition! - right.displayPosition!)
     await applyGraphPatch(db, {
-      projectId: options.projectId,
+      projectId,
       runId,
       origin: 'OPERATOR_EXPANSION',
-      operator: options.operator,
+      operator,
       ops: selected.map((candidate) => ({
         op: 'ADD_IDEA',
         candidateId: candidate.id,
@@ -699,14 +808,14 @@ export async function expandNode(
         .where(eq(generationRuns.id, runId))
       await appendEvent(tx, {
         id: randomUUID(),
-        projectId: options.projectId,
+        projectId,
         runId,
         nodeId: parent.id,
         type: 'GENERATION_FAILED',
         payload: {
           code,
           message,
-          operator: options.operator,
+          operator,
           parentNodeId: parent.id,
         },
         dedupeKey: null,

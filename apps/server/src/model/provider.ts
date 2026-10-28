@@ -415,6 +415,53 @@ export class ProviderError extends Error {
   }
 }
 
+function describeTransportError(
+  error: unknown,
+  secrets: readonly (string | undefined)[],
+): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const transportError = error as Record<string, unknown>
+  const cause =
+    transportError.cause && typeof transportError.cause === 'object'
+      ? (transportError.cause as Record<string, unknown>)
+      : undefined
+  const causeCode =
+    typeof cause?.code === 'string' || typeof cause?.code === 'number'
+      ? String(cause.code)
+      : undefined
+  const parts = [
+    transportError.name,
+    transportError.message,
+    causeCode,
+    cause?.message,
+  ].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
+  )
+  if (parts.length === 0) return undefined
+
+  let detail = parts.join(': ')
+  const sensitiveValues = secrets
+    .filter(
+      (secret): secret is string =>
+        typeof secret === 'string' && secret.length > 0,
+    )
+    .sort((a, b) => b.length - a.length)
+  for (const secret of sensitiveValues) {
+    detail = detail.split(secret).join('[REDACTED]')
+  }
+  detail = detail
+    .replace(/\bhttps?:\/\/[^\s"'<>]+/giu, '[provider URL]')
+    .replace(/\?[^\s"'<>]*/gu, '?[REDACTED]')
+    .replace(
+      /\b(x-api-key|authorization|api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/giu,
+      '$1=[REDACTED]',
+    )
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 200)
+  return detail || undefined
+}
+
 function taskSchema(request: StructuredGenerationRequest) {
   return request.task === 'extract'
     ? ExtractionOutputSchema
@@ -667,8 +714,14 @@ class LiveProvider implements ModelProvider {
       ) {
         throw new ProviderError('Model request timed out', 'TIMEOUT')
       }
+      const detail = describeTransportError(error, [
+        this.configuration.LLM_API_KEY,
+        this.configuration.MODEL_API_KEY,
+      ])
       throw new ProviderError(
-        'OpenAI-compatible provider request failed',
+        detail
+          ? `OpenAI-compatible provider request failed (${detail})`
+          : 'OpenAI-compatible provider request failed',
         'PROVIDER_ERROR',
       )
     }
@@ -983,8 +1036,14 @@ class AnthropicProvider implements ModelProvider {
       ) {
         throw new ProviderError('Model request timed out', 'TIMEOUT')
       }
+      const detail = describeTransportError(error, [
+        this.configuration.LLM_API_KEY,
+        this.configuration.MODEL_API_KEY,
+      ])
       throw new ProviderError(
-        'Anthropic provider request failed',
+        detail
+          ? `Anthropic provider request failed (${detail})`
+          : 'Anthropic provider request failed',
         'PROVIDER_ERROR',
       )
     }
@@ -1019,8 +1078,14 @@ class AnthropicProvider implements ModelProvider {
       ) {
         throw new ProviderError('Model request timed out', 'TIMEOUT')
       }
+      const detail = describeTransportError(error, [
+        this.configuration.LLM_API_KEY,
+        this.configuration.MODEL_API_KEY,
+      ])
       throw new ProviderError(
-        'Anthropic provider request failed',
+        detail
+          ? `Anthropic provider request failed (${detail})`
+          : 'Anthropic provider request failed',
         'PROVIDER_ERROR',
       )
     }
@@ -1106,7 +1171,7 @@ class MockProvider implements ModelProvider {
   ) {
     if (!output || typeof output !== 'object') return
     const property =
-      task === 'frame'
+      task === 'frame' || task === 'expand'
         ? 'candidates'
         : task === 'evaluate'
           ? 'evaluations'
@@ -1126,7 +1191,7 @@ class MockProvider implements ModelProvider {
     const last = values[values.length - 1]
     if (!last || typeof last !== 'object') return
     const partialLast =
-      task === 'frame'
+      task === 'frame' || task === 'expand'
         ? {
             key: (last as Record<string, unknown>).key,
             title: (last as Record<string, unknown>).title,

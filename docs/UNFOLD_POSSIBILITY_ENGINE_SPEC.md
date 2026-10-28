@@ -54,8 +54,10 @@ planning treats absent axes as unavailable features, and the REFRAME
 beneficiary check is skipped when the parent has no axes.
 
 Anthropic streams partial frame drafts and rubric scores into run progress
-while those calls are in flight. Drafts are display-only, never persisted as
-candidates or graph nodes; validated frame output replaces them.
+while those calls are in flight. Expansion runs stream child drafts and partial
+rubric scores through `projects.expandStart` and `runs.progress`. Drafts are
+display-only, never persisted as candidates or graph nodes; validated frame or
+expansion output replaces them.
 
 ## Schemas and persisted versions
 
