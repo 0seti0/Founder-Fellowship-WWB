@@ -848,3 +848,24 @@
 .p-fork-defend .p-test h4 {
   justify-content: flex-start;
 }
+
+.p-card.is-draft {
+  border: 1.5px dashed rgb(58 95 217 / 35%);
+  background: linear-gradient(145deg, #e6eaf0, #dde2e8);
+}
+
+.p-card.is-draft .p-t {
+  color: var(--p-ink2);
+}
+
+.p-card.is-draft.is-writing {
+  border-color: rgb(58 95 217 / 70%);
+}
+
+.p-draft-note {
+  color: var(--p-ink3);
+}
+
+.p-card.is-writing .p-draft-note {
+  color: var(--p-blue);
+}

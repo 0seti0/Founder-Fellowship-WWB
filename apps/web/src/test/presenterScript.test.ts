@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildPresenterScript,
   rejectionLabel,
+  scriptFromProgress,
   type PresenterSource,
 } from '../lib/presenterScript'
 
@@ -201,5 +202,50 @@ describe('rejectionLabel', () => {
       'Breaks a hard constraint',
     )
     expect(rejectionLabel('MISSING_FIELDS')).toBe('Missing fields')
+  })
+
+  it('maps streamed drafts and partial rubric scores without touching candidates', () => {
+    const { script, level } = scriptFromProgress(
+      {
+        prompt,
+        modelLabel: 'anthropic · claude',
+        policyVersion: 'initial-mmr-v3',
+        rubricVersion: 'candidate-rubric-v2',
+      },
+      {
+        stage: 'FRAMED',
+        facts: [],
+        constraints: [],
+        candidates: [],
+        drafts: [
+          { ordinal: 1, title: 'Pre-order batch', summary: null },
+          { ordinal: 2, title: 'Fam', summary: null },
+        ],
+        partialScores: [
+          {
+            candidateKey: 'k1',
+            scores: { intentCompatibility: 2, decisionUsefulness: 0 },
+          },
+        ],
+      },
+    )
+    expect(level).toBe(2)
+    expect(script.candidates).toEqual([])
+    expect(script.drafts).toEqual([
+      { ordinal: 1, title: 'Pre-order batch' },
+      { ordinal: 2, title: 'Fam' },
+    ])
+    expect(script.partialChecks).toEqual({
+      k1: [
+        { key: 'intentCompatibility', label: 'Intent', state: 'ok' },
+        { key: 'decisionUsefulness', label: 'Useful', state: 'bad' },
+      ],
+    })
+  })
+
+  it('leaves replay scripts without live drafts', () => {
+    const script = buildPresenterScript(source())
+    expect(script?.drafts).toEqual([])
+    expect(script?.partialChecks).toEqual({})
   })
 })

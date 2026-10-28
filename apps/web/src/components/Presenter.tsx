@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   scriptFromProgress,
   type PresenterCandidate,
+  type PresenterDraft,
   type PresenterScript,
 } from '../lib/presenterScript'
 import { trpcClient } from '../lib/trpc'
@@ -325,6 +326,8 @@ function createController(
     )
     if (blocking) {
       showWaiting(blocking.level, now)
+      if (blocking.level === 2) renderDrafts()
+      if (blocking.level === 3) renderPartialScores()
       return
     }
     gates = gates.filter((item) => item.level > dataLevel || item.t > clock)
@@ -362,6 +365,9 @@ function createController(
     clock = 0
     lastTick = 0
     waitingSince = null
+    draftCards.clear()
+    draftColumns = 0
+    scored.clear()
   }
   const type = (
     target: HTMLElement,
@@ -463,6 +469,119 @@ function createController(
   })
   const cardFor = (candidate: PresenterCandidate) =>
     cardsEl.querySelector<HTMLElement>(`[data-card="${candidate.id}"]`)
+
+  // Display-only previews of streamed model output; replaced by validated data.
+  const draftCards = new Map<number, HTMLElement>()
+  let draftColumns = 0
+  const renderDrafts = () => {
+    const drafts = script.drafts
+    if (!drafts.length) return
+    if (!draftCards.size) {
+      scene(2, 60)
+      log(
+        'generate',
+        'Claude is writing directions · drafts, not yet validated',
+      )
+    }
+    const count = Math.max(6, drafts.length)
+    const nextColumns = count <= 6 ? 3 : 4
+    const width = nextColumns === 3 ? 440 : 340
+    const left =
+      (STAGE_WIDTH - (nextColumns * width + (nextColumns - 1) * 40)) / 2
+    const relayout = nextColumns !== draftColumns
+    draftColumns = nextColumns
+    drafts.forEach((draft, index) => {
+      let card = draftCards.get(draft.ordinal)
+      const fresh = !card
+      if (!card) {
+        card = buildDraftCard(draft, nextColumns === 4)
+        cardsEl.appendChild(card)
+        draftCards.set(draft.ordinal, card)
+        animate(
+          card,
+          [
+            { opacity: 0, transform: 'translateY(18px) scale(.94)' },
+            { opacity: 1, transform: 'none' },
+          ],
+          { duration: 900 },
+        )
+      }
+      if (fresh || relayout) {
+        card.classList.toggle('is-compact', nextColumns === 4)
+        card.style.left = `${left + (index % nextColumns) * (width + 40)}px`
+        card.style.top = `${266 + Math.floor(index / nextColumns) * 236}px`
+        card.style.width = `${width}px`
+      }
+      const writing = index === drafts.length - 1
+      card.classList.toggle('is-writing', writing)
+      const title = card.querySelector<HTMLElement>('.p-t')
+      if (title && title.dataset.text !== draft.title + writing) {
+        title.dataset.text = draft.title + writing
+        title.textContent = draft.title
+        if (writing) {
+          const mark = document.createElement('span')
+          mark.className = 'p-caret'
+          title.appendChild(mark)
+        }
+      }
+      const note = card.querySelector<HTMLElement>('.p-draft-note')
+      if (note)
+        note.textContent = writing ? 'Writing…' : 'Draft · not yet checked'
+    })
+  }
+  const clearDrafts = () => {
+    for (const card of draftCards.values()) {
+      animate(card, [{ opacity: 1 }, { opacity: 0 }], {
+        duration: 400,
+      }).finished.then(
+        () => card.remove(),
+        () => card.remove(),
+      )
+    }
+    const had = draftCards.size > 0
+    draftCards.clear()
+    draftColumns = 0
+    return had
+  }
+
+  const scored = new Map<string, Set<string>>()
+  const renderPartialScores = () => {
+    for (const [key, checks] of Object.entries(script.partialChecks)) {
+      if (!checks.length) continue
+      const card = cardsEl.querySelector<HTMLElement>(
+        `[data-card="${CSS.escape(key)}"]`,
+      )
+      const footer = card?.querySelector<HTMLElement>('.p-ft')
+      if (!card || !footer) continue
+      let lit = scored.get(key)
+      if (!lit) {
+        if (!scored.size) {
+          scene(3, 60)
+          log('evaluate', 'scores arriving as Claude writes them')
+        }
+        lit = new Set()
+        scored.set(key, lit)
+        const scan = card.querySelector('.p-scan')
+        if (scan)
+          animate(scan, [{ left: '-140px' }, { left: '460px' }], {
+            duration: 900,
+            easing: 'linear',
+          })
+        footer.replaceChildren()
+      }
+      for (const check of checks) {
+        if (lit.has(check.key)) continue
+        lit.add(check.key)
+        const chip = document.createElement('span')
+        chip.className = `p-chk is-${check.state}`
+        chip.dataset.state = check.state
+        chip.dataset.key = check.key
+        chip.append(document.createElement('i'), check.label)
+        footer.appendChild(chip)
+        animate(chip, [{ opacity: 0 }, { opacity: 1 }], { duration: 300 })
+      }
+    }
+  }
 
   const resetDom = () => {
     promptEl.textContent = ''
@@ -729,10 +848,26 @@ function createController(
     at(8.2, () => {
       layoutCards()
       const n = candidates.length
-      const imagineSeconds = Math.max(6, n * 0.42 + 2.4)
+      const fromDrafts = clearDrafts()
+      const imagineSeconds = fromDrafts ? 2.4 : Math.max(6, n * 0.42 + 2.4)
       scene(2, imagineSeconds)
       status(`Imagining ${n} different directions`)
       candidates.forEach((candidate, index) => {
+        if (fromDrafts) {
+          const card = buildCard(candidate, columns === 4)
+          const { x, y } = position(index)
+          card.style.left = `${x}px`
+          card.style.top = `${y}px`
+          card.style.width = `${cardWidth}px`
+          const title = card.querySelector<HTMLElement>('.p-t')
+          if (title) title.textContent = candidate.title
+          cardsEl.appendChild(card)
+          animate(card, [{ opacity: 0 }, { opacity: 1 }], {
+            duration: 500,
+            delay: index * 60,
+          })
+          return
+        }
         const card = buildCard(candidate, columns === 4)
         const { x, y } = position(index)
         card.style.left = `${x}px`
@@ -759,7 +894,14 @@ function createController(
         candidates = script.candidates
         for (const candidate of candidates) {
           const card = cardFor(candidate)
-          card?.querySelector('.p-ft')?.replaceChildren(...chipsFor(candidate))
+          const chips = chipsFor(candidate)
+          const lit = scored.get(candidate.id)
+          for (const chip of chips) {
+            if (!lit?.has(chip.dataset.key ?? '')) continue
+            chip.classList.add(`is-${chip.dataset.state}`, 'is-lit')
+            animate(chip, [{ opacity: 1 }], { duration: 1 })
+          }
+          card?.querySelector('.p-ft')?.replaceChildren(...chips)
           const quality = card?.querySelector('.p-q')
           if (quality) quality.textContent = `Q ${candidate.q.toFixed(2)}`
         }
@@ -782,19 +924,20 @@ function createController(
           if (!card) return
           later(index * 520, () => {
             const scan = card.querySelector('.p-scan')
-            if (scan)
+            if (scan && !scored.has(candidate.id))
               animate(scan, [{ left: '-140px' }, { left: '460px' }], {
                 duration: 900,
                 easing: 'linear',
               })
-            ;[...card.querySelectorAll<HTMLElement>('.p-chk')].forEach(
-              (chip, chipIndex) =>
-                later(150 + chipIndex * 130, () => {
-                  chip.classList.add(`is-${chip.dataset.state}`)
-                  animate(chip, [{ opacity: 0 }, { opacity: 1 }], {
-                    duration: 300,
-                  })
-                }),
+            ;[
+              ...card.querySelectorAll<HTMLElement>('.p-chk:not(.is-lit)'),
+            ].forEach((chip, chipIndex) =>
+              later(150 + chipIndex * 130, () => {
+                chip.classList.add(`is-${chip.dataset.state}`)
+                animate(chip, [{ opacity: 0 }, { opacity: 1 }], {
+                  duration: 300,
+                })
+              }),
             )
             later(900, () => {
               const score = card.querySelector('.p-q')
@@ -1045,9 +1188,31 @@ function chipsFor(candidate: PresenterCandidate) {
     const chip = document.createElement('span')
     chip.className = 'p-chk'
     chip.dataset.state = check.state
+    chip.dataset.key = check.key
     chip.append(document.createElement('i'), check.label)
     return chip
   })
+}
+
+function buildDraftCard(draft: PresenterDraft, compact: boolean) {
+  const card = document.createElement('div')
+  card.className = compact ? 'p-card is-draft is-compact' : 'p-card is-draft'
+  card.dataset.draft = String(draft.ordinal)
+  const header = document.createElement('div')
+  header.className = 'p-hd'
+  const label = document.createElement('span')
+  label.className = 'p-n'
+  label.textContent = `Candidate ${pad(draft.ordinal)}`
+  header.append(label)
+  const title = document.createElement('div')
+  title.className = 'p-t'
+  const footer = document.createElement('div')
+  footer.className = 'p-ft'
+  const note = document.createElement('span')
+  note.className = 'p-draft-note'
+  footer.append(note)
+  card.append(header, title, footer)
+  return card
 }
 
 function fenceLabelNodes(script: PresenterScript) {
