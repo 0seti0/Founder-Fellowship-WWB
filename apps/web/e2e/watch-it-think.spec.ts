@@ -34,6 +34,11 @@ test('opens Watch it think and builds a fork on a direction', async ({
     .locator('.p-option-title')
     .allTextContents()
   expect(initialTitles).toHaveLength(await options.count())
+  const growGraph = page.getByTestId('grow-graph')
+  await expect(growGraph).toBeVisible({ timeout: 60_000 })
+  for (const title of initialTitles) {
+    await expect(growGraph).toContainText(title, { timeout: 60_000 })
+  }
   await expect(options.locator('.p-suggested')).toHaveCount(1)
   await page.screenshot({
     path: resolve(evidenceDirectory, 'watch-it-think-initial-options.png'),
@@ -50,6 +55,10 @@ test('opens Watch it think and builds a fork on a direction', async ({
     .toBeGreaterThanOrEqual(1)
   const childTitles = await options.locator('.p-option-title').allTextContents()
   expect(childTitles.length).toBeGreaterThanOrEqual(1)
+  for (const title of childTitles) {
+    await expect(growGraph).toContainText(title, { timeout: 60_000 })
+  }
+  await expect(growGraph).toContainText(selectedTitle, { timeout: 60_000 })
   await page.screenshot({
     path: resolve(evidenceDirectory, 'watch-it-think-fork-path.png'),
     fullPage: true,

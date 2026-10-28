@@ -702,10 +702,11 @@
 .p-fork {
   z-index: 8;
   inset: 0;
-  padding: 140px 90px 130px;
+  padding: 104px 70px 110px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  align-items: stretch;
+  gap: 12px;
 }
 
 .p-path {
@@ -753,13 +754,13 @@
 
 .p-option {
   display: flex;
-  min-height: 236px;
+  min-height: 128px;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   border: 1.5px solid rgb(255 255 255 / 65%);
   border-radius: 30px;
   background: linear-gradient(145deg, #e9edf2, #dbe0e6);
-  padding: 22px 24px;
+  padding: 16px 20px;
   box-shadow: var(--p-up);
   color: var(--p-ink);
   cursor: pointer;
@@ -796,15 +797,19 @@
 }
 
 .p-option-title {
-  font-size: 23px;
+  font-size: 19px;
   font-weight: 640;
   letter-spacing: -0.022em;
   line-height: 1.16;
 }
 
 .p-option-assume {
+  display: -webkit-box;
+  overflow: hidden;
   color: var(--p-ink2);
-  font-size: 15px;
+  font-size: 13.5px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   line-height: 1.35;
 }
 
@@ -831,12 +836,16 @@
 
 .p-fork-defend .p-col {
   opacity: 1;
-  padding: 20px 24px;
+  padding: 14px 20px;
 }
 
 .p-fork-defend .p-col p {
-  font-size: 17px;
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 14.5px;
   line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .p-fork-defend .p-test {
@@ -868,4 +877,221 @@
 
 .p-card.is-writing .p-draft-note {
   color: var(--p-blue);
+}
+
+.p-grow {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  border-radius: 34px;
+  box-shadow: var(--p-down);
+  transition: height 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.p-grow-camera {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  transition: transform 1.1s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.p-grow-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+}
+
+.p-grow-edge {
+  fill: none;
+  stroke: rgb(138 147 162 / 55%);
+  stroke-width: 2;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: p-edge-draw 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    d 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 0.6s,
+    opacity 0.6s;
+}
+
+.p-grow-edge.is-path {
+  stroke: var(--p-blue);
+  stroke-width: 3;
+}
+
+.p-grow-edge.is-pending {
+  stroke: rgb(58 95 217 / 55%);
+  stroke-dasharray: 0.02 0.02;
+  animation: p-edge-march 1.2s linear infinite;
+}
+
+.p-grow-edge.is-faint {
+  opacity: 0.35;
+}
+
+@keyframes p-edge-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+
+@keyframes p-edge-march {
+  to {
+    stroke-dashoffset: -0.04;
+  }
+}
+
+.p-gnode {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 7px;
+  border: 1.5px solid rgb(255 255 255 / 65%);
+  border-radius: 22px;
+  background: linear-gradient(145deg, #e9edf2, #dbe0e6);
+  padding: 13px 18px;
+  box-shadow: var(--p-up);
+  color: var(--p-ink);
+  animation: p-gnode-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    transform 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.6s,
+    box-shadow 0.4s,
+    border-color 0.4s;
+}
+
+@keyframes p-gnode-in {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+
+.p-gnode.is-exiting {
+  animation: p-gnode-out 0.8s ease both;
+}
+
+@keyframes p-gnode-out {
+  to {
+    opacity: 0;
+    scale: 0.9;
+  }
+}
+
+.p-gnode-hd {
+  display: flex;
+  justify-content: space-between;
+  color: var(--p-ink3);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.p-gnode-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.p-gnode.is-root {
+  background: linear-gradient(145deg, #2f3644, #232935);
+  color: #f1f3f6;
+}
+
+.p-gnode.is-root .p-gnode-hd {
+  color: #a9b1bf;
+}
+
+.p-gnode.is-root .p-gnode-title {
+  font-size: 15px;
+  font-weight: 560;
+}
+
+.p-gnode.is-path {
+  border-color: rgb(58 95 217 / 70%);
+}
+
+.p-gnode.is-path .p-gnode-hd,
+.p-gnode.is-focused .p-gnode-hd,
+.p-gnode.is-kept .p-gnode-hd {
+  color: var(--p-blue);
+}
+
+.p-gnode.is-focused {
+  box-shadow:
+    inset 0 0 0 2px var(--p-blue),
+    var(--p-up);
+}
+
+.p-gnode.is-building {
+  animation:
+    p-gnode-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both,
+    p-building 1.6s ease-in-out infinite;
+}
+
+@keyframes p-building {
+  50% {
+    box-shadow:
+      0 0 0 6px rgb(58 95 217 / 18%),
+      var(--p-up);
+  }
+}
+
+.p-gnode.is-other {
+  opacity: 0.45;
+}
+
+.p-gnode.is-draft {
+  border: 1.5px dashed rgb(58 95 217 / 40%);
+  background: linear-gradient(145deg, #e6eaf0, #dde2e8);
+  box-shadow: none;
+}
+
+.p-gnode.is-draft .p-gnode-title {
+  color: var(--p-ink2);
+}
+
+.p-gnode.is-kept {
+  border-color: rgb(58 95 217 / 45%);
+}
+
+.p-gnode.is-dropped {
+  opacity: 0.38;
+}
+
+.p-gnode-scores {
+  display: flex;
+  gap: 5px;
+}
+
+.p-gnode-scores i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgb(138 147 162 / 35%);
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 15%);
+  transition: background 0.5s;
+}
+
+.p-gnode-scores i.is-ok {
+  background: var(--p-mint);
+}
+
+.p-gnode-scores i.is-mid {
+  background: var(--p-amber);
+}
+
+.p-gnode-scores i.is-bad {
+  background: var(--p-coral);
 }
