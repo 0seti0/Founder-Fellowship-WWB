@@ -27,6 +27,7 @@ import {
   type RefObject,
 } from 'react'
 import '@xyflow/react/dist/style.css'
+import { formatErrorMessage } from './lib/errorMessage'
 import { layoutWithPreservedPositions } from './lib/layout'
 import { buildPresenterScript, scriptFromProgress } from './lib/presenterScript'
 import { buildRenderedGraph } from './lib/renderedGraph'
@@ -373,7 +374,7 @@ export function App() {
         })
       await queryClient.invalidateQueries({ queryKey: ['projects', 'list'] })
     } catch (error) {
-      setUiError(errorMessage(error))
+      setUiError(formatErrorMessage(error))
     } finally {
       setIsCreating(false)
     }
@@ -392,7 +393,7 @@ export function App() {
         queryKey: ['projects', projectData.project.id],
       })
     } catch (error) {
-      setUiError(errorMessage(error))
+      setUiError(formatErrorMessage(error))
     } finally {
       setIsRetrying(false)
     }
@@ -569,7 +570,7 @@ export function App() {
           {projectQuery.isError && !isGenerating && (
             <div className="workspace-message error-message" role="alert">
               <h2>Could not load this project</h2>
-              <p>{errorMessage(projectQuery.error)}</p>
+              <p>{formatErrorMessage(projectQuery.error)}</p>
             </div>
           )}
           {!projectId && !isGenerating && (
@@ -928,8 +929,4 @@ function updateUrl(projectId: string | null, nodeId: string | null) {
   if (nodeId) url.searchParams.set('node', nodeId)
   else url.searchParams.delete('node')
   window.history.replaceState(null, '', url)
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Something went wrong.'
 }

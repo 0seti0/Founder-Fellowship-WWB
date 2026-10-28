@@ -5,6 +5,7 @@ import {
   type MockScenario,
 } from '@unfold/shared'
 import { useEffect, useMemo, useState } from 'react'
+import { formatErrorMessage } from '../lib/errorMessage'
 import { refreshAndClearPending } from '../lib/refreshAndClearPending'
 import { trpcClient } from '../lib/trpc'
 
@@ -103,7 +104,7 @@ export function Stage2Controls({
       if (action === 'setActive') await trpcClient.nodes.setActive.mutate(input)
       setNotice('Saved.')
     } catch (caught) {
-      setError(message(caught))
+      setError(formatErrorMessage(caught))
     } finally {
       await refreshAndClearPending(
         () => refreshMutationQueries(queryClient, projectId, onChanged),
@@ -138,7 +139,7 @@ export function Stage2Controls({
       }
     } catch (caught) {
       setExpansionState('failure')
-      setError(message(caught))
+      setError(formatErrorMessage(caught))
     } finally {
       await refreshAndClearPending(
         () => refreshMutationQueries(queryClient, projectId, onChanged),
@@ -181,7 +182,7 @@ export function Stage2Controls({
       })
       setNotice('Changes saved.')
     } catch (caught) {
-      setError(message(caught))
+      setError(formatErrorMessage(caught))
     } finally {
       await refreshAndClearPending(
         () => refreshMutationQueries(queryClient, projectId, onChanged),
@@ -372,8 +373,4 @@ async function refreshMutationQueries(
     queryClient.invalidateQueries({ queryKey: ['projects', 'list'] }),
     onChanged(),
   ])
-}
-
-function message(value: unknown) {
-  return value instanceof Error ? value.message : 'Something went wrong.'
 }
