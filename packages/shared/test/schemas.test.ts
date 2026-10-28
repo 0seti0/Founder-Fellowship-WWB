@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   DbHealthSchema,
+  CandidateEvaluationV2Schema,
+  CandidateQualitySchema,
   ExtractionOutputSchema,
   ExpandOutputSchema,
   EditableIdeaFieldsSchema,
   FrameOutputSchema,
+  FrameSingleOutputSchema,
+  GenerationStrategySchema,
   HealthStatusSchema,
   ModelModeSchema,
   UnaryOperatorSchema,
@@ -36,6 +40,17 @@ describe('shared schemas', () => {
   it('accepts only supported model modes', () => {
     expect(ModelModeSchema.parse('live')).toBe('live')
     expect(ModelModeSchema.safeParse('other').success).toBe(false)
+  })
+
+  it('accepts exactly the six versioned generation strategies', () => {
+    expect(GenerationStrategySchema.options).toEqual([
+      'JOINT_AXIS_V1',
+      'JOINT_AXIS_FREE_V1',
+      'INDEPENDENT_SAME_PROMPT_V1',
+      'PARAPHRASE_ENSEMBLE_V1',
+      'PARAPHRASE_RANDOM_STRING_V1',
+      'SSOT_V1',
+    ])
   })
 
   it('keeps expansion output strict and unary', () => {
@@ -81,6 +96,92 @@ describe('shared schemas', () => {
         })),
       }).success,
     ).toBe(false)
+  })
+
+  it('accepts axis-free candidates without axes or facets', () => {
+    const candidate = {
+      key: 'axis-free',
+      title: 'A direction',
+      summary: 'A concise direction.',
+      hypothesis: {
+        statement: 'One plausible deeper goal.',
+        assumptions: ['The goal is worth testing.'],
+        supportingFactRefs: [],
+        counterevidence: [],
+        falsifiers: ['The test finds no interest.'],
+      },
+      preservedIntent: 'Explore the idea.',
+      changedAssumptions: ['Start with one small test.'],
+      fitRationale: 'It produces useful evidence.',
+      strongestObjection: 'The result may not generalize.',
+      firstTest: 'Ask five people this week and record replies.',
+      mechanism: 'A small interview test.',
+      distance: 'near',
+    }
+    expect(FrameSingleOutputSchema.parse({ candidate })).toEqual({ candidate })
+    expect(
+      FrameOutputSchema.parse({
+        candidates: Array.from({ length: 4 }, (_, index) => ({
+          ...candidate,
+          key: `axis-free-${index}`,
+        })),
+      }).candidates,
+    ).toHaveLength(4)
+  })
+
+  it('accepts only integer rubric scores from zero through two', () => {
+    const valid = {
+      candidateKey: 'candidate-1',
+      constraints: [],
+      intentCompatibility: { score: 0, rationale: 'A reason.' },
+      decisionUsefulness: { score: 1, rationale: 'A reason.' },
+      specificityCoherence: { score: 2, rationale: 'A reason.' },
+      firstTestExecutability: { score: 0, rationale: 'A reason.' },
+      nonObviousness: { score: 2, rationale: 'A reason.' },
+    }
+    expect(CandidateEvaluationV2Schema.safeParse(valid).success).toBe(true)
+    for (const score of [-1, 1.5, 3]) {
+      expect(
+        CandidateEvaluationV2Schema.safeParse({
+          ...valid,
+          intentCompatibility: { score, rationale: 'A reason.' },
+        }).success,
+      ).toBe(false)
+    }
+  })
+
+  it('accepts legacy and v2 candidate quality without translating either', () => {
+    const legacy = {
+      intentAlignment: { label: 'high', rationale: 'Legacy score.' },
+      usefulness: { label: 'medium', rationale: 'Legacy score.' },
+      specificity: { label: 'low', rationale: 'Legacy score.' },
+    }
+    const v2 = {
+      rubricVersion: 'candidate-rubric-v2',
+      criteria: {
+        intentCompatibility: { score: 2, rationale: 'Intent.', weight: 0.3 },
+        decisionUsefulness: { score: 1, rationale: 'Usefulness.', weight: 0.2 },
+        specificityCoherence: {
+          score: 2,
+          rationale: 'Specificity.',
+          weight: 0.15,
+        },
+        firstTestExecutability: {
+          score: 1,
+          rationale: 'Test.',
+          weight: 0.2,
+        },
+        nonObviousness: {
+          score: 0,
+          rationale: 'Restatement.',
+          weight: 0.15,
+        },
+      },
+      q: 0.65,
+      floor: { passed: false, failures: ['RESTATEMENT'] },
+    }
+    expect(CandidateQualitySchema.parse(legacy)).toEqual(legacy)
+    expect(CandidateQualitySchema.parse(v2)).toEqual(v2)
   })
 
   it('requires nonempty, trimmed editable fields', () => {

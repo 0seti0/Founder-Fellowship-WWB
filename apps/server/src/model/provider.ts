@@ -1,17 +1,22 @@
 import type {
   Axes,
-  CandidateEvaluation,
-  EvaluateOutput,
+  EvaluateOutputV2,
   ExtractedConstraint,
   ExtractedFact,
   ExtractionOutput,
   IdeaContent,
   FrameCandidate,
-  FrameOutput,
   MockScenario,
   UnaryOperator,
 } from '@unfold/shared'
 import type { ModelMode } from '@unfold/shared'
+import {
+  FRAME_PROMPT_VERSION,
+  FRAME_SINGLE_PROMPT_VERSION,
+  FRAME_PARAPHRASE_PROMPT_VERSION,
+  FRAME_RANDOM_STRING_PROMPT_VERSION,
+  SSOT_PROMPT_VERSION,
+} from '../generation/prompts'
 
 export type GenerationTask = 'extract' | 'frame' | 'evaluate' | 'expand'
 
@@ -424,6 +429,7 @@ class LiveProvider implements ModelProvider {
 class MockProvider implements ModelProvider {
   identity = { provider: 'mock', model: 'mock-unfold-v1' }
   private readonly calls = new Map<GenerationTask, number>()
+  private malformedOnceUsed = false
 
   constructor(private readonly scenario: MockScenario) {}
 
@@ -459,7 +465,7 @@ class MockProvider implements ModelProvider {
       case 'extract':
         return this.extract(request.input, attempt)
       case 'frame':
-        return this.frame(request.input)
+        return this.frame(request)
       case 'evaluate':
         return this.evaluate(request.input)
       case 'expand':
@@ -476,7 +482,16 @@ class MockProvider implements ModelProvider {
   }
 
   private shouldBeInvalid(attempt: number) {
-    return this.scenario === 'malformed' || attempt === 1
+    if (this.scenario === 'malformed') return true
+    if (
+      this.scenario === 'malformed-once' &&
+      attempt === 1 &&
+      !this.malformedOnceUsed
+    ) {
+      this.malformedOnceUsed = true
+      return true
+    }
+    return false
   }
 
   private extract(input: unknown, attempt: number): ExtractionOutput {
@@ -536,22 +551,32 @@ class MockProvider implements ModelProvider {
     return { facts, constraints }
   }
 
-  private frame(input: unknown): FrameOutput {
-    const { prompt, facts } = input as {
-      prompt: string
+  private frame(request: StructuredGenerationRequest): unknown {
+    const { originalPrompt, prompt, facts } = request.input as {
+      originalPrompt?: string
+      prompt?: string
       facts: ExtractedFact[]
       constraints: ExtractedConstraint[]
     }
+    const sourcePrompt = originalPrompt ?? prompt ?? ''
     const subject = getSubject(
-      prompt.replace(/\bno[-‐‑](\p{L}+)/giu, (modifier, word: string) =>
+      sourcePrompt.replace(/\bno[-‐‑](\p{L}+)/giu, (modifier, word: string) =>
         hyphenatedNoModifiers.has(word.toLowerCase()) ? modifier : '',
       ),
     )
     const firstFactRef = facts[0]?.ref
-    const offset = stableHash(prompt) % archetypes.length
+    const offset = stableHash(sourcePrompt) % archetypes.length
     const selected = Array.from({ length: 6 }, (_, index) => {
       const archetype = archetypes[(offset + index) % archetypes.length]!
-      return makeCandidate(archetype, subject, firstFactRef)
+      const candidate = makeCandidate(archetype, subject, firstFactRef)
+      if (
+        request.promptVersion !== FRAME_PROMPT_VERSION &&
+        request.promptVersion !== FRAME_SINGLE_PROMPT_VERSION
+      ) {
+        delete candidate.facets
+        delete candidate.hypothesis.axes
+      }
+      return candidate
     })
 
     if (this.scenario === 'paraphrase') {
@@ -582,6 +607,17 @@ class MockProvider implements ModelProvider {
     if (this.scenario === 'low-quality' && selected[0]) {
       selected[0].firstTest = 'Conduct some more research.'
     }
+    const callIndex = (this.calls.get('frame') ?? 1) - 1
+    const candidate = selected[callIndex % selected.length]!
+    if (request.promptVersion === SSOT_PROMPT_VERSION)
+      return { seed: `mockseed${callIndex}`, candidate }
+    if (
+      request.promptVersion === FRAME_SINGLE_PROMPT_VERSION ||
+      request.promptVersion === FRAME_PARAPHRASE_PROMPT_VERSION ||
+      request.promptVersion === FRAME_RANDOM_STRING_PROMPT_VERSION ||
+      request.promptVersion === SSOT_PROMPT_VERSION
+    )
+      return { candidate }
     return { candidates: selected }
   }
 
@@ -595,7 +631,7 @@ class MockProvider implements ModelProvider {
     const subject =
       parent.title.trim().split(': ', 1)[0]?.trim() || 'this direction'
     const sourceMechanism = (mechanism || parent.mechanism).trim()
-    const beneficiary = parent.hypothesis.axes.beneficiary
+    const beneficiary = parent.hypothesis.axes?.beneficiary ?? 'neighbors'
     const preservedIntent = parent.preservedIntent
     const trustedAssumption =
       assumption ?? parent.changedAssumptions[0] ?? 'the original assumption'
@@ -677,22 +713,24 @@ class MockProvider implements ModelProvider {
     }
   }
 
-  private evaluate(input: unknown): EvaluateOutput {
-    const { candidates, constraints } = input as {
-      candidates: FrameCandidate[]
+  private evaluate(input: unknown): EvaluateOutputV2 {
+    const payload = input as {
+      candidates: Array<{ key: string; content: FrameCandidate }>
       constraints: ExtractedConstraint[]
     }
-    const evaluations: CandidateEvaluation[] = candidates.map(
-      (candidate, index) => {
-        let label: 'low' | 'medium' | 'high' =
-          index % 3 === 0 ? 'high' : 'medium'
-        if (this.scenario === 'none-pass') label = 'low'
-        if (this.scenario === 'few-pass' && index < candidates.length - 2)
-          label = 'low'
-        if (this.scenario === 'low-quality' && index === 0) label = 'low'
-        if (this.scenario === 'weak-diverse' && index === 5) label = 'low'
-
-        return {
+    const candidates = payload.candidates.map((item) => item.content)
+    const { constraints } = payload
+    const evaluations = candidates.map((candidate, index) => {
+      const score =
+        this.scenario === 'none-pass' ||
+        (this.scenario === 'few-pass' && index < candidates.length - 2) ||
+        (this.scenario === 'low-quality' && index === 0) ||
+        (this.scenario === 'weak-diverse' && index === 5)
+          ? 0
+          : index % 4 === 3
+            ? 1
+            : 2
+      return {
           candidateKey: candidate.key,
           constraints: constraints.map((constraint) => {
             let status: 'satisfied' | 'violated' | 'unknown' =
@@ -718,31 +756,28 @@ class MockProvider implements ModelProvider {
                     : 'The direction is consistent with this constraint.',
             }
           }),
-          intentAlignment: {
-            label,
-            rationale:
-              label === 'low'
-                ? 'The direction is not sufficiently aligned to the prompt.'
-                : 'The direction preserves a plausible reading of the prompt.',
-          },
-          usefulness: {
-            label,
-            rationale:
-              label === 'low'
-                ? 'The direction is unlikely to help the user make progress.'
-                : 'The direction offers a useful way to make progress.',
-          },
-          specificity: {
-            label:
-              this.scenario === 'low-quality' && index === 0 ? 'low' : label,
-            rationale:
-              this.scenario === 'low-quality' && index === 0
-                ? 'The first test is generic rather than observable.'
-                : 'The direction includes a concrete first test.',
-          },
-        }
-      },
-    )
+        intentCompatibility: {
+          score,
+          rationale: 'The candidate fits a plausible reading of the prompt.',
+        },
+        decisionUsefulness: {
+          score,
+          rationale: 'The candidate offers a concrete decision or action.',
+        },
+        specificityCoherence: {
+          score,
+          rationale: 'The mechanism and direction are coherent.',
+        },
+        firstTestExecutability: {
+          score,
+          rationale: 'The first test is practical and observable.',
+        },
+        nonObviousness: {
+          score: Math.max(score, 1),
+          rationale: 'The direction is more than a restatement.',
+        },
+      }
+    })
     return { evaluations }
   }
 }

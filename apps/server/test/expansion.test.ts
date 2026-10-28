@@ -359,9 +359,17 @@ describe('operator expansion pipeline', () => {
     )) {
       const components = candidate.selectionMetadata.components as
         Record<string, unknown> | undefined
-      expect(typeof components?.axisCoverageBonus).toBe('number')
-      expect(components!.axisCoverageBonus as number).toBeGreaterThanOrEqual(0)
-      expect(components!.axisCoverageBonus as number).toBeLessThanOrEqual(0.04)
+      expect(components).toHaveProperty('q')
+      expect(components).toHaveProperty('operatorSuitability')
+      expect(components).toHaveProperty('redundancy')
+      expect(components).toHaveProperty('score')
+      expect(candidate.selectionScore).toBeCloseTo(
+        0.7 * candidate.qualityScore +
+          0.3 * (components!.operatorSuitability as number) -
+          0.15 * (components!.redundancy as number),
+      )
+      expect(components).not.toHaveProperty('axisCoverageBonus')
+      expect(components).not.toHaveProperty('facetBonus')
     }
   })
 

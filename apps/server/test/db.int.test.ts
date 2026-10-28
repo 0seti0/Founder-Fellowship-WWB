@@ -74,38 +74,69 @@ describe('MySQL integration', () => {
       .sort((left, right) => left.displayPosition! - right.displayPosition!)
     expect(root).toBeDefined()
     expect(selected).toHaveLength(4)
+    expect(
+      project.candidates.every(
+        (candidate) =>
+          candidate.content.hypothesis.axes == null &&
+          candidate.content.facets === undefined,
+      ),
+    ).toBe(true)
     expect(project.nodes).toHaveLength(5)
     expect(project.edges).toHaveLength(4)
     expect(project.latestRun).toMatchObject({
       status: 'SUCCEEDED',
-      schemaVersion: 'stage1-v1',
-      selectionPolicyVersion: 'initial-mmr-v2',
+      schemaVersion: 'idea-schema-v2',
+      selectionPolicyVersion: 'initial-mmr-v3',
+      generationStrategy: 'JOINT_AXIS_FREE_V1',
+      rubricVersion: 'candidate-rubric-v2',
     })
 
     const { db, pool } = getDatabase(databaseUrl)
-    const persistedSelected = (
-      await db
-        .select({
-          displayPosition: candidates.displayPosition,
-          selectionState: candidates.selectionState,
-          selectionMetadata: candidates.selectionMetadata,
-        })
-        .from(candidates)
-        .where(eq(candidates.runId, project.latestRun!.id))
-    )
+    const persistedCandidates = await db
+      .select({
+        displayPosition: candidates.displayPosition,
+        selectionState: candidates.selectionState,
+        selectionMetadata: candidates.selectionMetadata,
+        quality: candidates.quality,
+        generationMeta: candidates.generationMeta,
+      })
+      .from(candidates)
+      .where(eq(candidates.runId, project.latestRun!.id))
+    expect(persistedCandidates).toHaveLength(6)
+    expect(
+      persistedCandidates.every(
+        (candidate) =>
+          'criteria' in candidate.quality &&
+          candidate.quality.rubricVersion === 'candidate-rubric-v2' &&
+          Array.isArray(candidate.quality.floor.failures) &&
+          candidate.generationMeta !== null,
+      ),
+    ).toBe(true)
+    const persistedSelected = persistedCandidates
       .filter((candidate) => candidate.selectionState === 'SELECTED')
       .sort((left, right) => left.displayPosition! - right.displayPosition!)
     expect(persistedSelected).toHaveLength(4)
     for (const candidate of persistedSelected) {
+      expect(candidate.quality).toMatchObject({
+        rubricVersion: 'candidate-rubric-v2',
+        floor: { passed: true },
+      })
+      expect('criteria' in candidate.quality).toBe(true)
+      if (!('criteria' in candidate.quality)) continue
+      expect(Object.keys(candidate.quality.criteria)).toHaveLength(5)
+      expect(typeof candidate.quality.q).toBe('number')
+      expect(candidate.generationMeta).toMatchObject({
+        strategy: 'JOINT_AXIS_FREE_V1',
+        strategyVersion: 'v1',
+        promptVersion: 'frame-axis-free-v1',
+      })
       const components = candidate.selectionMetadata.components as
         Record<string, unknown> | undefined
-      const axisCoverageBonus = components?.axisCoverageBonus
-      expect(typeof axisCoverageBonus).toBe('number')
-      expect(axisCoverageBonus as number).toBeGreaterThanOrEqual(0)
-      expect(axisCoverageBonus as number).toBeLessThanOrEqual(0.04)
-      if (candidate.displayPosition === 1) {
-        expect(axisCoverageBonus).toBe(0)
-      }
+      expect(components).toHaveProperty('q')
+      expect(components).toHaveProperty('redundancy')
+      expect(components).toHaveProperty('score')
+      expect(components).not.toHaveProperty('axisCoverageBonus')
+      expect(components).not.toHaveProperty('facetBonus')
     }
 
     const projectEvents = await caller.events.list({
@@ -419,10 +450,11 @@ describe('MySQL integration', () => {
 
       expect(run.operator).toBe(operator)
       expect(run.operatorRegistryVersion).toBe('operators-v1')
-      expect(run.promptVersions.expand).toBe('expand-v1')
-      expect(run.promptVersions.evaluate).toBe('evaluate-v1')
-      expect(run.schemaVersion).toBe('expand-v1')
-      expect(run.selectionPolicyVersion).toBe('expansion-mmr-v1')
+      expect(run.promptVersions.expand).toBe('expand-v2')
+      expect(run.promptVersions.evaluate).toBe('evaluate-rubric-v2')
+      expect(run.schemaVersion).toBe('idea-schema-v2')
+      expect(run.selectionPolicyVersion).toBe('expansion-mmr-v2')
+      expect(run.rubricVersion).toBe('candidate-rubric-v2')
       expect(runCandidates).toHaveLength(6)
       expect(selected.length).toBeGreaterThanOrEqual(1)
       expect(selected.length).toBeLessThanOrEqual(3)
@@ -467,13 +499,11 @@ describe('MySQL integration', () => {
       )) {
         const components = candidate.selectionMetadata.components as
           Record<string, unknown> | undefined
-        expect(typeof components?.axisCoverageBonus).toBe('number')
-        expect(components!.axisCoverageBonus as number).toBeGreaterThanOrEqual(
-          0,
-        )
-        expect(components!.axisCoverageBonus as number).toBeLessThanOrEqual(
-          0.04,
-        )
+        expect(typeof components?.q).toBe('number')
+        expect(typeof components?.operatorSuitability).toBe('number')
+        expect(typeof components?.score).toBe('number')
+        expect(components).not.toHaveProperty('axisCoverageBonus')
+        expect(components).not.toHaveProperty('facetBonus')
       }
       const persistedHypotheses = await db
         .select()

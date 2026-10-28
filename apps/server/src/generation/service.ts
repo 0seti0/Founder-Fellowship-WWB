@@ -9,6 +9,7 @@ import {
   type PromptItemDto,
   type UnaryOperator,
   type IdeaContent,
+  type CandidateQuality,
 } from '@unfold/shared'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
@@ -32,17 +33,19 @@ import {
   expandPipeline,
   generatePipeline,
   PipelineError,
+  RUBRIC_VERSION,
+  RUBRIC_WEIGHTS,
   SCHEMA_VERSION,
   SELECTION_POLICY_VERSION,
   type PipelineAttempt,
   type PipelineResult,
+  type ScoredCandidate,
 } from './pipeline'
 import {
-  EVALUATE_PROMPT_VERSION,
-  EXPAND_PROMPT_VERSION,
-  EXPAND_SCHEMA_VERSION,
+  EVALUATE_RUBRIC_PROMPT_VERSION,
+  EXPAND_PROMPT_VERSION_V2,
   EXTRACT_PROMPT_VERSION,
-  FRAME_PROMPT_VERSION,
+  FRAME_AXIS_FREE_PROMPT_VERSION,
 } from './prompts'
 import {
   OPERATOR_REGISTRY,
@@ -172,11 +175,13 @@ export async function generateInitial(
     modelName: provider.identity.model,
     promptVersions: {
       extract: EXTRACT_PROMPT_VERSION,
-      frame: FRAME_PROMPT_VERSION,
-      evaluate: EVALUATE_PROMPT_VERSION,
+      frame: FRAME_AXIS_FREE_PROMPT_VERSION,
+      evaluate: EVALUATE_RUBRIC_PROMPT_VERSION,
     },
     schemaVersion: SCHEMA_VERSION,
     selectionPolicyVersion: SELECTION_POLICY_VERSION,
+    generationStrategy: 'JOINT_AXIS_FREE_V1',
+    rubricVersion: RUBRIC_VERSION,
     dedupMode: null,
     degraded: false,
     attempts: [],
@@ -193,6 +198,7 @@ export async function generateInitial(
       prompt: project.originalPrompt,
       provider,
       timeoutMs: options.timeoutMs,
+      strategy: 'JOINT_AXIS_FREE_V1',
     })
     attempts = pipeline.attempts
     await persistPipeline(connection, options.projectId, runId, pipeline)
@@ -426,15 +432,17 @@ export async function expandNode(
     modelProvider: provider.identity.provider,
     modelName: provider.identity.model,
     promptVersions: {
-      evaluate: EVALUATE_PROMPT_VERSION,
-      expand: EXPAND_PROMPT_VERSION,
+      evaluate: EVALUATE_RUBRIC_PROMPT_VERSION,
+      expand: EXPAND_PROMPT_VERSION_V2,
     },
     operator: options.operator,
     parentNodeId: parent.id,
     operatorRegistryVersion: OPERATOR_REGISTRY_VERSION,
     planningFeatures: planningMetadata,
-    schemaVersion: EXPAND_SCHEMA_VERSION,
+    schemaVersion: SCHEMA_VERSION,
     selectionPolicyVersion: EXPANSION_SELECTION_POLICY_VERSION,
+    generationStrategy: null,
+    rubricVersion: RUBRIC_VERSION,
     dedupMode: null,
     degraded: false,
     attempts: [],
@@ -490,11 +498,8 @@ export async function expandNode(
           suitabilityScore: suitability.score,
           planningMetadata,
           constraintEvaluations: candidate.evaluation.constraints,
-          quality: {
-            intentAlignment: candidate.evaluation.intentAlignment,
-            usefulness: candidate.evaluation.usefulness,
-            specificity: candidate.evaluation.specificity,
-          },
+          quality: qualityForCandidate(candidate),
+          generationMeta: candidate.generationMeta ?? null,
           completeness: candidate.completeness,
           genericFirstTest: candidate.genericFirstTest,
           eligibility: candidate.eligibility,
@@ -512,8 +517,8 @@ export async function expandNode(
             duplicateOfNodeId:
               candidate.selectionMetadata.duplicateOfNodeId ?? null,
           },
-          promptVersion: EXPAND_PROMPT_VERSION,
-          schemaVersion: EXPAND_SCHEMA_VERSION,
+          promptVersion: EXPAND_PROMPT_VERSION_V2,
+          schemaVersion: SCHEMA_VERSION,
           policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
           nodeId: null,
         })
@@ -523,7 +528,7 @@ export async function expandNode(
           runId,
           candidateId: candidate.id,
           statement: candidate.content.hypothesis.statement,
-          axes: candidate.content.hypothesis.axes,
+          axes: candidate.content.hypothesis.axes ?? null,
           assumptions: candidate.content.hypothesis.assumptions,
           supportingFactIds:
             candidate.content.hypothesis.supportingFactRefs.flatMap((ref) =>
@@ -642,11 +647,8 @@ async function persistPipeline(
         modelKey: candidate.content.key,
         content: candidate.content,
         constraintEvaluations: candidate.evaluation.constraints,
-        quality: {
-          intentAlignment: candidate.evaluation.intentAlignment,
-          usefulness: candidate.evaluation.usefulness,
-          specificity: candidate.evaluation.specificity,
-        },
+        quality: qualityForCandidate(candidate),
+        generationMeta: candidate.generationMeta ?? null,
         completeness: candidate.completeness,
         genericFirstTest: candidate.genericFirstTest,
         eligibility: candidate.eligibility,
@@ -659,7 +661,10 @@ async function persistPipeline(
         displayPosition: candidate.displayPosition,
         selectionProbability: candidate.selectionProbability,
         selectionMetadata: candidate.selectionMetadata,
-        promptVersion: FRAME_PROMPT_VERSION,
+        promptVersion:
+          typeof candidate.generationMeta?.promptVersion === 'string'
+            ? candidate.generationMeta.promptVersion
+            : FRAME_AXIS_FREE_PROMPT_VERSION,
         schemaVersion: SCHEMA_VERSION,
         policyVersion: SELECTION_POLICY_VERSION,
         nodeId: null,
@@ -670,7 +675,7 @@ async function persistPipeline(
         runId,
         candidateId: candidate.id,
         statement: candidate.content.hypothesis.statement,
-        axes: candidate.content.hypothesis.axes,
+        axes: candidate.content.hypothesis.axes ?? null,
         assumptions: candidate.content.hypothesis.assumptions,
         supportingFactIds: candidate.hypothesisSupportingFactIds,
         counterevidence: candidate.content.hypothesis.counterevidence,
@@ -683,6 +688,8 @@ async function persistPipeline(
         attempts: pipeline.attempts,
         dedupMode: pipeline.dedupMode,
         degraded: pipeline.degraded,
+        generationStrategy: pipeline.strategy,
+        rubricVersion: pipeline.rubricVersion,
       })
       .where(eq(generationRuns.id, runId))
   })
@@ -813,6 +820,7 @@ export async function getProject(
           ),
           quality: candidate.quality,
           qualityScore: candidate.qualityScore,
+          generationMeta: candidate.generationMeta,
           eligibility: candidate.eligibility,
           rejectionReasons: candidate.rejectionReasons,
           selectionState: candidate.selectionState,
@@ -907,6 +915,8 @@ function toRunDto(run: typeof generationRuns.$inferSelect): GenerationRunDto {
     planningFeatures: run.planningFeatures,
     schemaVersion: run.schemaVersion,
     selectionPolicyVersion: run.selectionPolicyVersion,
+    generationStrategy: run.generationStrategy,
+    rubricVersion: run.rubricVersion,
     dedupMode: run.dedupMode,
     degraded: run.degraded,
     attempts: run.attempts,
@@ -929,5 +939,46 @@ function toPromptItemDto(item: typeof promptItems.$inferSelect): PromptItemDto {
     evidenceEnd: item.evidenceEnd,
     strength: item.strength,
     basis: item.basis,
+  }
+}
+
+function qualityForCandidate(candidate: ScoredCandidate): CandidateQuality {
+  const evaluation = candidate.evaluation
+  if ('intentAlignment' in evaluation) {
+    return {
+      intentAlignment: evaluation.intentAlignment,
+      usefulness: evaluation.usefulness,
+      specificity: evaluation.specificity,
+    }
+  }
+  return {
+    rubricVersion: RUBRIC_VERSION,
+    criteria: {
+      intentCompatibility: {
+        ...evaluation.intentCompatibility,
+        weight: RUBRIC_WEIGHTS.intentCompatibility,
+      },
+      decisionUsefulness: {
+        ...evaluation.decisionUsefulness,
+        weight: RUBRIC_WEIGHTS.decisionUsefulness,
+      },
+      specificityCoherence: {
+        ...evaluation.specificityCoherence,
+        weight: RUBRIC_WEIGHTS.specificityCoherence,
+      },
+      firstTestExecutability: {
+        ...evaluation.firstTestExecutability,
+        weight: RUBRIC_WEIGHTS.firstTestExecutability,
+      },
+      nonObviousness: {
+        ...evaluation.nonObviousness,
+        weight: RUBRIC_WEIGHTS.nonObviousness,
+      },
+    },
+    q: candidate.qualityScore,
+    floor: {
+      passed: candidate.eligibility === 'ELIGIBLE',
+      failures: candidate.rejectionReasons,
+    },
   }
 }

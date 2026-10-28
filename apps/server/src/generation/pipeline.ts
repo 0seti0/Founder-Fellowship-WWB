@@ -1,27 +1,43 @@
 import {
-  EvaluateOutputSchema,
+  CandidateEvaluationV2Schema,
+  EvaluateOutputV2Schema,
   ExpandOutputSchema,
   ExtractionOutputSchema,
+  FrameSingleOutputSchema,
   FrameOutputSchema,
+  SsotOutputSchema,
   type CandidateEvaluation,
+  type CandidateEvaluationV2,
   type ExtractedConstraint,
   type ExtractedFact,
   type FrameCandidate,
+  type GenerationStrategy,
   type IdeaContent,
   type UnaryOperator,
 } from '@unfold/shared'
 import { OPERATOR_REGISTRY } from '../operators/registry'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import {
+  EVALUATE_RUBRIC_PROMPT_VERSION,
+  EVALUATE_RUBRIC_SYSTEM_PROMPT,
   EVALUATE_PROMPT_VERSION,
-  EVALUATE_SYSTEM_PROMPT,
   EXTRACT_PROMPT_VERSION,
   EXTRACT_SYSTEM_PROMPT,
+  FRAME_AXIS_FREE_PROMPT_VERSION,
+  FRAME_AXIS_FREE_SYSTEM_PROMPT,
+  FRAME_PARAPHRASE_PROMPT_VERSION,
+  FRAME_RANDOM_STRING_PROMPT_VERSION,
+  FRAME_SINGLE_PROMPT_VERSION,
+  FRAME_SINGLE_SYSTEM_PROMPT,
+  RANDOM_STRING_ADDENDUM,
+  SSOT_PROMPT_VERSION,
+  SSOT_SYSTEM_PROMPT,
   FRAME_PROMPT_VERSION,
   FRAME_SYSTEM_PROMPT,
-  EXPAND_PROMPT_VERSION,
+  EXPAND_PROMPT_VERSION_V2,
   EXPAND_SCHEMA_VERSION,
-  EXPAND_SYSTEM_PROMPT,
+  EXPAND_SYSTEM_PROMPT_V2,
+  frameParaphraseSystemPrompt,
 } from './prompts'
 import {
   ProviderError,
@@ -29,19 +45,36 @@ import {
   type StructuredGenerationRequest,
 } from '../model/provider'
 
-export const SCHEMA_VERSION = 'stage1-v1'
-export const SELECTION_POLICY_VERSION = 'initial-mmr-v2'
+export const SCHEMA_VERSION = 'idea-schema-v2'
+export const RUBRIC_VERSION = 'candidate-rubric-v2'
+export const SELECTION_POLICY_VERSION = 'initial-mmr-v3'
 export const EMBEDDING_DEDUP_THRESHOLD = 0.92
 export const TEXT_FALLBACK_DEDUP_THRESHOLD = 0.8
-export const EXPANSION_SELECTION_POLICY_VERSION = 'expansion-mmr-v1'
+export const EXPANSION_SELECTION_POLICY_VERSION = 'expansion-mmr-v2'
+export const RUBRIC_WEIGHTS = {
+  intentCompatibility: 0.3,
+  decisionUsefulness: 0.2,
+  specificityCoherence: 0.15,
+  firstTestExecutability: 0.2,
+  nonObviousness: 0.15,
+} as const
+const RANDOM_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 
 export type PipelineAttempt = {
-  task: 'extract' | 'frame' | 'evaluate' | 'expand' | 'dedupe' | 'selection'
+  task:
+    | 'extract'
+    | 'frame'
+    | 'evaluate'
+    | 'expand'
+    | 'compare'
+    | 'dedupe'
+    | 'selection'
   attempt?: number
   ok: boolean
   code?: string
   message?: string
   reason?: string
+  metadata?: Record<string, unknown>
 }
 
 export class PipelineError extends Error {
@@ -66,7 +99,8 @@ export type ScoredCandidate = {
   id: string
   ordinal: number
   content: FrameCandidate
-  evaluation: CandidateEvaluation
+  evaluation: CandidateEvaluation | CandidateEvaluationV2
+  generationMeta?: Record<string, unknown> | null
   qualityScore: number
   completeness: Record<string, boolean>
   genericFirstTest: boolean
@@ -90,12 +124,17 @@ export type PipelineResult = {
   dedupMode: 'EMBEDDING' | 'TEXT_FALLBACK'
   degraded: boolean
   degradationReason: string | null
+  strategy: GenerationStrategy
+  rubricVersion: string
+  generationMeta: Record<string, unknown>
 }
 
 type PipelineOptions = {
   prompt: string
   provider: ModelProvider
   timeoutMs: number
+  strategy?: GenerationStrategy
+  explorationSeed?: string
 }
 
 const promptVersions = {
@@ -108,20 +147,29 @@ export async function generatePipeline({
   prompt,
   provider,
   timeoutMs,
+  strategy = 'JOINT_AXIS_FREE_V1',
+  explorationSeed,
 }: PipelineOptions): Promise<PipelineResult> {
   const attempts: PipelineAttempt[] = []
   const extracted = await extract(prompt, provider, timeoutMs, attempts)
-  const frameCandidates = await frame(
+  const facts = extracted.facts.map((span) => span.item as ExtractedFact)
+  const constraints = extracted.constraints.map(
+    (span) => span.item as ExtractedConstraint,
+  )
+  const framed = await frame(
     prompt,
-    extracted.facts.map((span) => span.item as ExtractedFact),
-    extracted.constraints.map((span) => span.item as ExtractedConstraint),
+    facts,
+    constraints,
     provider,
     timeoutMs,
     attempts,
+    strategy,
+    explorationSeed,
   )
-  const evaluations = await evaluate(
-    frameCandidates,
-    extracted.constraints.map((span) => span.item as ExtractedConstraint),
+  const evaluations = await evaluateV2(
+    framed.candidates,
+    prompt,
+    constraints,
     provider,
     timeoutMs,
     attempts,
@@ -129,12 +177,25 @@ export async function generatePipeline({
   return completePipeline({
     facts: extracted.facts,
     constraints: extracted.constraints,
-    frameCandidates,
+    frameCandidates: framed.candidates,
     evaluations,
     provider,
     timeoutMs,
     attempts,
+    generationMeta: framed.metadata,
+    strategy,
+    additionalRejectionReasons: framed.rejectionReasons,
   })
+}
+
+export function calculateQ(evaluation: CandidateEvaluationV2) {
+  return Object.entries(RUBRIC_WEIGHTS).reduce(
+    (sum, [criterion, weight]) =>
+      sum +
+      weight *
+        (evaluation[criterion as keyof typeof RUBRIC_WEIGHTS].score / 2),
+    0,
+  )
 }
 
 export async function expandPipeline(options: {
@@ -165,9 +226,9 @@ export async function expandPipeline(options: {
       options.provider,
       {
         task: 'expand',
-        promptVersion: EXPAND_PROMPT_VERSION,
+        promptVersion: EXPAND_PROMPT_VERSION_V2,
         schemaVersion: EXPAND_SCHEMA_VERSION,
-        system: EXPAND_SYSTEM_PROMPT,
+        system: EXPAND_SYSTEM_PROMPT_V2,
         input: {
           operator: options.operator,
           instruction: definition.instruction,
@@ -247,8 +308,9 @@ export async function expandPipeline(options: {
         attempts,
       )
   }
-  const evaluations = await evaluate(
+  const evaluations = await evaluateV2(
     content!,
+    options.rootPrompt,
     options.constraints,
     options.provider,
     options.timeoutMs,
@@ -275,9 +337,10 @@ export async function expandPipeline(options: {
     maximumSelected: 3,
     policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
     suitability: options.suitabilityScore ?? 0.5,
-    axisCoverage: true,
     existingChildren: options.existingChildren ?? [],
     additionalRejectionReasons: effectRejections,
+    strategy: 'JOINT_AXIS_FREE_V1',
+    generationMeta: {},
   })
 }
 
@@ -366,113 +429,269 @@ async function frame(
   provider: ModelProvider,
   timeoutMs: number,
   attempts: PipelineAttempt[],
-): Promise<FrameCandidate[]> {
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  strategy: GenerationStrategy,
+  explorationSeed?: string,
+): Promise<{
+  candidates: FrameCandidate[]
+  metadata: Record<string, unknown>
+  rejectionReasons: Map<string, string[]>
+}> {
+  const independent = strategy !== 'JOINT_AXIS_V1' &&
+    strategy !== 'JOINT_AXIS_FREE_V1'
+  const candidates: FrameCandidate[] = []
+  const metadata: Record<string, unknown> = {
+    strategy,
+    calls: [],
+  }
+  const rejectionReasons = new Map<string, string[]>()
+  const seedStrings: string[] = []
+
+  if (!independent) {
+    const axisFree = strategy === 'JOINT_AXIS_FREE_V1'
+    const promptVersion = axisFree
+      ? FRAME_AXIS_FREE_PROMPT_VERSION
+      : FRAME_PROMPT_VERSION
     const result = await invoke(
       provider,
       {
         task: 'frame',
-        promptVersion: promptVersions.frame,
+        promptVersion,
         schemaVersion: SCHEMA_VERSION,
-        system: FRAME_SYSTEM_PROMPT,
-        input: { prompt, facts, constraints },
+        system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
+        input: {
+          originalPrompt: prompt,
+          facts,
+          constraints,
+          strategy,
+        },
       },
       timeoutMs,
       attempts,
-      attempt,
+      1,
     )
     const parsed = FrameOutputSchema.safeParse(result)
     if (!parsed.success) {
       attempts.push({
         task: 'frame',
-        attempt,
+        attempt: 1,
         ok: false,
         code: 'MALFORMED_OUTPUT',
         message: parsed.error.message,
       })
-      if (attempt === 2)
+      throw new PipelineError(
+        'Frame output did not match the required schema',
+        'MALFORMED_OUTPUT',
+        attempts,
+      )
+    }
+    candidates.push(...parsed.data.candidates)
+    attempts.push({
+      task: 'frame',
+      attempt: 1,
+      ok: true,
+      reason: promptVersion,
+      metadata: {
+        index: 0,
+        promptVersion,
+        system:
+          axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
+        instructionVariant: null,
+      },
+    })
+    metadata.calls = [
+      {
+        index: 0,
+        promptVersion,
+        system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
+        instructionVariant: null,
+      },
+    ]
+  } else {
+    for (let index = 0; index < 6; index += 1) {
+      const randomString =
+        strategy === 'PARAPHRASE_RANDOM_STRING_V1'
+          ? explorationSeed
+            ? deterministicExplorationString(explorationSeed, index)
+            : randomExplorationString()
+          : undefined
+      const promptVersion =
+        strategy === 'SSOT_V1'
+          ? SSOT_PROMPT_VERSION
+          : strategy === 'PARAPHRASE_ENSEMBLE_V1'
+            ? FRAME_PARAPHRASE_PROMPT_VERSION
+            : strategy === 'PARAPHRASE_RANDOM_STRING_V1'
+              ? FRAME_RANDOM_STRING_PROMPT_VERSION
+              : FRAME_SINGLE_PROMPT_VERSION
+      const system =
+        strategy === 'SSOT_V1'
+          ? SSOT_SYSTEM_PROMPT
+          : strategy === 'PARAPHRASE_ENSEMBLE_V1'
+            ? frameParaphraseSystemPrompt(index)
+            : strategy === 'PARAPHRASE_RANDOM_STRING_V1'
+              ? `${frameParaphraseSystemPrompt(index)}${RANDOM_STRING_ADDENDUM}`
+              : FRAME_SINGLE_SYSTEM_PROMPT
+      const callMeta: Record<string, unknown> = {
+        index,
+        promptVersion,
+        system,
+        instructionVariant:
+          strategy === 'PARAPHRASE_ENSEMBLE_V1' ||
+          strategy === 'PARAPHRASE_RANDOM_STRING_V1'
+            ? index
+            : null,
+        ...(randomString ? { explorationString: randomString } : {}),
+      }
+      ;(metadata.calls as unknown[]).push(callMeta)
+      if (randomString) seedStrings.push(randomString)
+      let candidate: FrameCandidate | null = null
+      let returnedSeed: string | undefined
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const result = await invoke(
+          provider,
+          {
+            task: 'frame',
+            promptVersion,
+            schemaVersion: SCHEMA_VERSION,
+            system,
+            input: {
+              originalPrompt: prompt,
+              facts,
+              constraints,
+              ...(randomString ? { explorationString: randomString } : {}),
+            },
+          },
+          timeoutMs,
+          attempts,
+          attempt,
+        )
+        const parsed =
+          strategy === 'SSOT_V1'
+            ? SsotOutputSchema.safeParse(result)
+            : FrameSingleOutputSchema.safeParse(result)
+        if (!parsed.success) {
+          attempts.push({
+            task: 'frame',
+            attempt,
+            ok: false,
+            code: 'MALFORMED_OUTPUT',
+            message: parsed.error.message,
+          })
+          if (attempt === 2)
+            throw new PipelineError(
+              'Single-candidate frame output did not match the required schema',
+              'MALFORMED_OUTPUT',
+              attempts,
+            )
+          continue
+        }
+        candidate = parsed.data.candidate
+        if ('seed' in parsed.data && typeof parsed.data.seed === 'string')
+          returnedSeed = parsed.data.seed
+        const validFactRefs = new Set(facts.map((fact) => fact.ref))
+        if (
+          !candidate.hypothesis.supportingFactRefs.every((ref) =>
+            validFactRefs.has(ref),
+          )
+        ) {
+          candidate = null
+          attempts.push({
+            task: 'frame',
+            attempt,
+            ok: false,
+            code: 'MALFORMED_OUTPUT',
+            message: 'A candidate cited a missing supporting fact',
+          })
+          if (attempt === 2)
+            throw new PipelineError(
+              'Frame candidate referenced a missing fact',
+              'MALFORMED_OUTPUT',
+              attempts,
+            )
+          continue
+        }
+        attempts.push({
+          task: 'frame',
+          attempt,
+          ok: true,
+          reason: promptVersion,
+          metadata: callMeta,
+        })
+        break
+      }
+      if (!candidate)
         throw new PipelineError(
-          'Frame output did not match the required schema',
+          'Single-candidate frame generation failed',
           'MALFORMED_OUTPUT',
           attempts,
         )
-      continue
+      candidate.key = `k${index + 1}`
+      if (returnedSeed) {
+        seedStrings.push(returnedSeed)
+        callMeta['returnedSeed'] = returnedSeed
+      }
+      const leaked = seedStrings.some(
+        (seed) => seed.length >= 6 && containsSeed(candidate!, seed),
+      )
+      if (leaked)
+        rejectionReasons.set(candidate.key, ['SEED_LEAK'])
+      if (seedStrings.length) stripSeeds(candidate, seedStrings)
+      candidates.push(candidate)
     }
-
-    const factRefs = new Set(facts.map((fact) => fact.ref))
-    const validRefs = parsed.data.candidates.every((candidate) =>
-      candidate.hypothesis.supportingFactRefs.every((ref) => factRefs.has(ref)),
-    )
-    const uniqueKeys =
-      new Set(parsed.data.candidates.map((candidate) => candidate.key)).size ===
-      parsed.data.candidates.length
-    if (!validRefs || !uniqueKeys) {
-      attempts.push({
-        task: 'frame',
-        attempt,
-        ok: false,
-        code: 'MALFORMED_OUTPUT',
-        message: validRefs
-          ? 'Candidate keys must be unique'
-          : 'A candidate cited a missing supporting fact',
-      })
-      if (attempt === 2)
-        throw new PipelineError(
-          'Frame candidates referenced missing facts or repeated keys',
-          'MALFORMED_OUTPUT',
-          attempts,
-        )
-      continue
-    }
-
-    if (!hasContrastiveVariation(parsed.data.candidates)) {
-      attempts.push({
-        task: 'frame',
-        attempt,
-        ok: false,
-        code: 'PARAPHRASE_SET',
-        message: 'Frame candidates did not vary across at least two axes',
-      })
-      if (attempt === 2)
-        throw new PipelineError(
-          'Frame candidates were paraphrases rather than distinct directions',
-          'PARAPHRASE_SET',
-          attempts,
-        )
-      continue
-    }
-    attempts.push({ task: 'frame', attempt, ok: true })
-    return parsed.data.candidates
   }
-  throw new PipelineError(
-    'Frame generation failed',
-    'MALFORMED_OUTPUT',
-    attempts,
+
+  const calls = metadata.calls as Array<Record<string, unknown>>
+  metadata.seedStrings = seedStrings
+  metadata.candidateMetadata = Object.fromEntries(
+    candidates.map((candidate, index) => {
+      const call = calls[index] ?? calls[0]
+      return [
+        candidate.key,
+        {
+          strategy,
+          strategyVersion: 'v1',
+          callIndex: Number(call?.index ?? 0),
+          promptVersion: String(call?.promptVersion ?? ''),
+          instructionVariant: call?.instructionVariant ?? null,
+          systemPrompt: String(call?.system ?? ''),
+          explorationString: call?.explorationString ?? null,
+          returnedSeed: call?.returnedSeed ?? null,
+        },
+      ]
+    }),
   )
+  return { candidates, metadata, rejectionReasons }
 }
 
-async function evaluate(
+async function evaluateV2(
   candidates: FrameCandidate[],
+  originalPrompt: string,
   constraints: ExtractedConstraint[],
   provider: ModelProvider,
   timeoutMs: number,
   attempts: PipelineAttempt[],
-): Promise<CandidateEvaluation[]> {
+): Promise<CandidateEvaluationV2[]> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await invoke(
       provider,
       {
         task: 'evaluate',
-        promptVersion: promptVersions.evaluate,
+        promptVersion: EVALUATE_RUBRIC_PROMPT_VERSION,
         schemaVersion: SCHEMA_VERSION,
-        system: EVALUATE_SYSTEM_PROMPT,
-        input: { candidates, constraints },
+        system: EVALUATE_RUBRIC_SYSTEM_PROMPT,
+        input: {
+          originalPrompt,
+          constraints,
+          candidates: candidates.map((candidate) => ({
+            key: candidate.key,
+            content: candidate,
+          })),
+        },
       },
       timeoutMs,
       attempts,
       attempt,
     )
-    const parsed = EvaluateOutputSchema.safeParse(result)
+    const parsed = EvaluateOutputV2Schema.safeParse(result)
     const coverageError = parsed.success
       ? evaluationCoverageError(
           parsed.data.evaluations,
@@ -496,14 +715,19 @@ async function evaluate(
         )
       continue
     }
-    attempts.push({ task: 'evaluate', attempt, ok: true })
+    attempts.push({
+      task: 'evaluate',
+      attempt,
+      ok: true,
+      reason: EVALUATE_RUBRIC_PROMPT_VERSION,
+    })
     return parsed.data.evaluations
   }
   throw new PipelineError('Evaluation failed', 'MALFORMED_OUTPUT', attempts)
 }
 
 function evaluationCoverageError(
-  evaluations: CandidateEvaluation[],
+  evaluations: CandidateEvaluationV2[],
   candidates: FrameCandidate[],
   constraints: ExtractedConstraint[],
 ) {
@@ -538,37 +762,6 @@ function evaluationCoverageError(
   return null
 }
 
-function hasContrastiveVariation(candidates: FrameCandidate[]) {
-  const axes = [
-    'goal',
-    'beneficiary',
-    'motivation',
-    'mechanism',
-    'timeHorizon',
-    'risk',
-  ] as const
-  const variedAxisCount = axes.filter(
-    (axis) =>
-      new Set(
-        candidates.map((candidate) =>
-          normalize(candidate.hypothesis.axes[axis]),
-        ),
-      ).size > 1,
-  ).length
-  if (variedAxisCount < 2) return false
-  for (let left = 0; left < candidates.length; left += 1) {
-    for (let right = left + 1; right < candidates.length; right += 1) {
-      const differences = axes.filter(
-        (axis) =>
-          normalize(candidates[left]!.hypothesis.axes[axis]) !==
-          normalize(candidates[right]!.hypothesis.axes[axis]),
-      ).length
-      if (differences < 2) return false
-    }
-  }
-  return true
-}
-
 async function completePipeline({
   facts,
   constraints,
@@ -577,24 +770,26 @@ async function completePipeline({
   provider,
   timeoutMs,
   attempts,
+  strategy,
+  generationMeta,
   maximumSelected = 4,
   policyVersion = SELECTION_POLICY_VERSION,
   suitability = 0,
-  axisCoverage = true,
   existingChildren = [],
   additionalRejectionReasons = new Map(),
 }: {
   facts: EvidenceSpan[]
   constraints: EvidenceSpan[]
   frameCandidates: FrameCandidate[]
-  evaluations: CandidateEvaluation[]
+  evaluations: CandidateEvaluationV2[]
   provider: ModelProvider
   timeoutMs: number
   attempts: PipelineAttempt[]
+  strategy: GenerationStrategy
+  generationMeta: Record<string, unknown>
   maximumSelected?: number
   policyVersion?: string
   suitability?: number
-  axisCoverage?: boolean
   existingChildren?: Array<{
     id: string
     title: string
@@ -615,23 +810,27 @@ async function completePipeline({
       const evaluation = byKey.get(content.key)!
       const completeness = checkCompleteness(content)
       const genericFirstTest = isGenericFirstTest(content.firstTest)
-      const qualityScore =
-        (0.45 * labelScore(evaluation.intentAlignment.label) +
-          0.35 * labelScore(evaluation.usefulness.label) +
-          0.2 * labelScore(evaluation.specificity.label)) /
-        2
+      const qualityScore = calculateQ(evaluation)
       const rejectionReasons: string[] = []
       rejectionReasons.push(
         ...(additionalRejectionReasons.get(content.key) ?? []),
       )
-      for (const [dimension, score] of [
-        ['intentAlignment', evaluation.intentAlignment],
-        ['usefulness', evaluation.usefulness],
-        ['specificity', evaluation.specificity],
-      ] as const) {
-        if (score.label === 'low')
-          rejectionReasons.push(`LOW_QUALITY:${dimension}`)
+      const validFactRefs = new Set(facts.map((span) => span.item.ref))
+      for (const ref of content.hypothesis.supportingFactRefs) {
+        if (!validFactRefs.has(ref))
+          rejectionReasons.push(`INVALID_EVIDENCE_REF:${ref}`)
       }
+      for (const criterion of [
+        'intentCompatibility',
+        'decisionUsefulness',
+        'specificityCoherence',
+        'firstTestExecutability',
+      ] as const) {
+        if (evaluation[criterion].score === 0)
+          rejectionReasons.push(`LOW_SCORE:${criterion}`)
+      }
+      if (evaluation.nonObviousness.score === 0)
+        rejectionReasons.push('RESTATEMENT')
       for (const [field, complete] of Object.entries(completeness)) {
         if (!complete) rejectionReasons.push(`INCOMPLETE:${field}`)
       }
@@ -657,6 +856,10 @@ async function completePipeline({
         ordinal: ordinal + 1,
         content,
         evaluation,
+        generationMeta:
+          (generationMeta.candidateMetadata as
+            | Record<string, Record<string, unknown>>
+            | undefined)?.[content.key] ?? null,
         qualityScore,
         completeness,
         genericFirstTest,
@@ -763,7 +966,6 @@ async function completePipeline({
     maximumSelected,
     policyVersion,
     suitability,
-    axisCoverage,
   })
   attempts.push({
     task: 'selection',
@@ -778,6 +980,9 @@ async function completePipeline({
     dedupMode,
     degraded,
     degradationReason,
+    strategy,
+    rubricVersion: RUBRIC_VERSION,
+    generationMeta,
   }
 }
 
@@ -793,7 +998,6 @@ function checkCompleteness(candidate: FrameCandidate) {
     strongestObjection: Boolean(candidate.strongestObjection.trim()),
     firstTest: Boolean(candidate.firstTest.trim()),
     mechanism: Boolean(candidate.mechanism.trim()),
-    facets: candidate.facets.some((value) => value.trim()),
     'hypothesis.statement': Boolean(candidate.hypothesis.statement.trim()),
     'hypothesis.assumptions': candidate.hypothesis.assumptions.some((value) =>
       value.trim(),
@@ -856,7 +1060,11 @@ function markDuplicates(
     if (indices.length < 2) continue
     const representativeIndex = [...indices].sort((left, right) => {
       const score = eligible[right]!.qualityScore - eligible[left]!.qualityScore
-      return score || eligible[left]!.ordinal - eligible[right]!.ordinal
+      return (
+        score ||
+        eligible[left]!.ordinal - eligible[right]!.ordinal ||
+        eligible[left]!.id.localeCompare(eligible[right]!.id)
+      )
     })[0]!
     const representative = eligible[representativeIndex]!
     for (const index of indices) {
@@ -903,13 +1111,11 @@ export function selectCandidates(
     maximumSelected?: number
     policyVersion?: string
     suitability?: number
-    axisCoverage?: boolean
   } = {},
 ) {
   const maximumSelected = options.maximumSelected ?? 4
   const policyVersion = options.policyVersion ?? SELECTION_POLICY_VERSION
   const suitability = options.suitability ?? 0
-  const axisCoverage = options.axisCoverage ?? true
   const active = eligible.filter(
     (candidate) => candidate.selectionState !== 'DUPLICATE',
   )
@@ -919,60 +1125,38 @@ export function selectCandidates(
       .filter((candidate) => !selected.includes(candidate))
       .map((candidate) => {
         const candidateIndex = eligible.indexOf(candidate)
-        const axisValues = getAxisValues(candidate.content)
-        const facets = new Set(
-          axisValues
-            .map(normalize)
-            .concat(candidate.content.facets.map(normalize)),
-        )
-        const covered = new Set(
-          selected.flatMap((item) =>
-            getAxisValues(item.content)
-              .concat(item.content.facets)
-              .map(normalize),
-          ),
-        )
-        const uncovered = [...facets].filter(
-          (facet) => !covered.has(facet),
-        ).length
-        const facetBonus =
-          0.1 * (uncovered / (6 + candidate.content.facets.length))
         const redundancy =
           selected.length === 0
             ? 0
-            : 0.15 *
-              Math.max(
-                ...selected.map(
-                  (item) =>
-                    similarities[candidateIndex]![eligible.indexOf(item)]!,
-                ),
-              )
-        const minAxisDifference =
-          selected.length === 0
-            ? 0
-            : Math.min(
+            : Math.max(
                 ...selected.map((item) =>
-                  axisDifferenceCount(item.content, candidate.content),
+                  Math.max(
+                    0,
+                    Math.min(
+                      1,
+                      similarities[candidateIndex]![eligible.indexOf(item)]!,
+                    ),
+                  ),
                 ),
               )
-        const axisCoverageBonus = axisCoverage
-          ? (0.04 * Math.min(2, minAxisDifference)) / 2
-          : 0
-        const suitabilityBonus = 0.05 * suitability
-        const baseScore = candidate.qualityScore + suitabilityBonus
+        const expansion = policyVersion === EXPANSION_SELECTION_POLICY_VERSION
+        const baseScore = expansion
+          ? 0.7 * candidate.qualityScore + 0.3 * suitability
+          : candidate.qualityScore
         return {
           candidate,
-          score: baseScore + facetBonus + axisCoverageBonus - redundancy,
+          score: baseScore - 0.15 * redundancy,
           baseScore,
-          facetBonus,
-          suitabilityBonus,
-          axisCoverageBonus,
           redundancy,
         }
       })
       .sort((left, right) => {
         const difference = right.score - left.score
-        return difference || left.candidate.ordinal - right.candidate.ordinal
+        return (
+          difference ||
+          left.candidate.ordinal - right.candidate.ordinal ||
+          left.candidate.id.localeCompare(right.candidate.id)
+        )
       })
     const next = ranked[0]
     if (!next) break
@@ -982,18 +1166,18 @@ export function selectCandidates(
     next.candidate.selectionScore = next.score
     next.candidate.selectionProbability = 1
     next.candidate.displayPosition = position
+    const expansion = policyVersion === EXPANSION_SELECTION_POLICY_VERSION
     next.candidate.selectionMetadata = {
       policyVersion,
       randomized: false,
       note: 'deterministic policy; selectionProbability is not a propensity for off-policy evaluation',
       rank: position,
       components: {
-        qualityScore: next.candidate.qualityScore,
-        suitabilityBonus: next.suitabilityBonus,
-        baseScore: next.baseScore,
-        facetBonus: next.facetBonus,
-        axisCoverageBonus: next.axisCoverageBonus,
+        q: next.candidate.qualityScore,
+        ...(expansion ? { operatorSuitability: suitability } : {}),
+        base: next.baseScore,
         redundancy: next.redundancy,
+        score: next.score,
       },
     }
   }
@@ -1005,8 +1189,6 @@ export function selectCandidates(
         rank: null,
         components: {
           qualityScore: candidate.qualityScore,
-          facetBonus: 0,
-          axisCoverageBonus: 0,
           redundancy: 0,
         },
       }
@@ -1016,8 +1198,6 @@ export function selectCandidates(
         rank: null,
         components: {
           qualityScore: candidate.qualityScore,
-          facetBonus: 0,
-          axisCoverageBonus: 0,
           redundancy: 0,
         },
       }
@@ -1025,30 +1205,54 @@ export function selectCandidates(
   }
 }
 
-function getAxisValues(candidate: FrameCandidate) {
-  return [
-    candidate.hypothesis.axes.goal,
-    candidate.hypothesis.axes.beneficiary,
-    candidate.hypothesis.axes.motivation,
-    candidate.hypothesis.axes.mechanism,
-    candidate.hypothesis.axes.timeHorizon,
-    candidate.hypothesis.axes.risk,
-  ]
-}
-
-function axisDifferenceCount(left: FrameCandidate, right: FrameCandidate) {
-  return getAxisValues(left).filter(
-    (value, index) =>
-      normalize(value) !== normalize(getAxisValues(right)[index]!),
-  ).length
-}
-
-function labelScore(label: 'low' | 'medium' | 'high') {
-  return label === 'high' ? 2 : label === 'medium' ? 1 : 0
-}
-
 function normalize(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function deterministicExplorationString(seed: string, index: number) {
+  const bytes = createHash('sha256').update(`${seed}:${index}`).digest()
+  return Array.from(bytes.subarray(0, 16))
+    .map((byte) => RANDOM_ALPHABET[byte % RANDOM_ALPHABET.length])
+    .join('')
+}
+
+function randomExplorationString() {
+  return Array.from(randomBytes(16))
+    .map((byte) => RANDOM_ALPHABET[byte % RANDOM_ALPHABET.length])
+    .join('')
+}
+
+function containsSeed(value: unknown, seed: string): boolean {
+  if (typeof value === 'string')
+    return value.toLowerCase().includes(seed.toLowerCase())
+  if (Array.isArray(value)) return value.some((item) => containsSeed(item, seed))
+  if (value && typeof value === 'object')
+    return Object.values(value).some((item) => containsSeed(item, seed))
+  return false
+}
+
+function stripSeeds(candidate: FrameCandidate, seeds: string[]) {
+  const visit = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      let cleaned = value
+      for (const seed of seeds) {
+        if (seed.length >= 6)
+          cleaned = cleaned.replace(new RegExp(escapeRegex(seed), 'gi'), '')
+      }
+      return cleaned.trim() || '[seed removed]'
+    }
+    if (Array.isArray(value)) return value.map(visit)
+    if (value && typeof value === 'object')
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, visit(item)]),
+      )
+    return value
+  }
+  Object.assign(candidate, visit(candidate))
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function makeSimilarityMatrix(

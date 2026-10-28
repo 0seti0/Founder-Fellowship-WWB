@@ -10,6 +10,7 @@ import {
   type ModelProvider,
 } from '../src/model/provider'
 import {
+  calculateQ,
   generatePipeline,
   PipelineError,
   selectCandidates,
@@ -292,10 +293,121 @@ describe('initial generation pipeline', () => {
     }
   })
 
-  it('rejects paraphrase sets after one retry', async () => {
-    await expect(generate('paraphrase')).rejects.toMatchObject({
-      code: 'PARAPHRASE_SET',
+  it.each([
+    'JOINT_AXIS_V1',
+    'JOINT_AXIS_FREE_V1',
+    'INDEPENDENT_SAME_PROMPT_V1',
+    'PARAPHRASE_ENSEMBLE_V1',
+    'PARAPHRASE_RANDOM_STRING_V1',
+    'SSOT_V1',
+  ] as const)('runs the expected calls and metadata for %s', async (strategy) => {
+    const baseProvider = createModelProvider({ MODEL_MODE: 'mock' })
+    const requests: Parameters<ModelProvider['generateStructured']>[0][] = []
+    const provider: ModelProvider = {
+      identity: baseProvider.identity,
+      generateStructured: async (request) => {
+        requests.push(request)
+        return baseProvider.generateStructured(request)
+      },
+      embed: (texts, signal) => baseProvider.embed(texts, signal),
+    }
+    const result = await generatePipeline({
+      prompt,
+      provider,
+      timeoutMs,
+      strategy,
+      explorationSeed: 'eval-v1',
     })
+    const frameCalls = requests.filter((request) => request.task === 'frame')
+    expect(frameCalls).toHaveLength(
+      strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1' ? 1 : 6,
+    )
+    expect(
+      frameCalls.every(
+        (request) =>
+          (request.input as { originalPrompt: string }).originalPrompt ===
+          prompt,
+      ),
+    ).toBe(true)
+    expect(result.candidates).toHaveLength(6)
+    const keys = result.candidates.map((candidate) => candidate.content.key)
+    if (strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1') {
+      expect(new Set(keys).size).toBe(6)
+    } else {
+      expect(keys).toEqual(['k1', 'k2', 'k3', 'k4', 'k5', 'k6'])
+    }
+    if (strategy === 'JOINT_AXIS_FREE_V1') {
+      expect(
+        result.candidates.every(
+          (candidate) =>
+            candidate.content.hypothesis.axes === undefined &&
+            candidate.content.facets === undefined,
+        ),
+      ).toBe(true)
+    }
+    if (strategy === 'PARAPHRASE_RANDOM_STRING_V1') {
+      const strings = frameCalls.map(
+        (request) =>
+          (request.input as { explorationString: string }).explorationString,
+      )
+      expect(strings.every((value) => /^[a-z0-9]{16}$/.test(value))).toBe(true)
+      expect(new Set(strings).size).toBe(6)
+    }
+    expect(result.candidates.every((candidate) => candidate.generationMeta)).toBe(
+      true,
+    )
+  })
+
+  it('calculates the rubric Q from its exact weights', () => {
+    expect(
+      calculateQ({
+        candidateKey: 'q-example',
+        constraints: [],
+        intentCompatibility: { score: 2, rationale: 'intent' },
+        decisionUsefulness: { score: 1, rationale: 'usefulness' },
+        specificityCoherence: { score: 2, rationale: 'specificity' },
+        firstTestExecutability: { score: 1, rationale: 'test' },
+        nonObviousness: { score: 0, rationale: 'restatement' },
+      }),
+    ).toBeCloseTo(0.65)
+  })
+
+  it('rejects and scrubs an external exploration string echoed by a candidate', async () => {
+    const baseProvider = createModelProvider({ MODEL_MODE: 'mock' })
+    const strings: string[] = []
+    const provider: ModelProvider = {
+      identity: baseProvider.identity,
+      async generateStructured(request) {
+        const output = await baseProvider.generateStructured(request)
+        if (
+          request.task !== 'frame' ||
+          request.promptVersion !== 'frame-random-string-v1'
+        )
+          return output
+        const result = output as { candidate: FrameCandidate }
+        const explorationString = (
+          request.input as { explorationString: string }
+        ).explorationString
+        strings.push(explorationString)
+        return {
+          candidate: {
+            ...result.candidate,
+            title: `${result.candidate.title} ${explorationString}`,
+          },
+        }
+      },
+      embed: (texts, signal) => baseProvider.embed(texts, signal),
+    }
+    const result = await generatePipeline({
+      prompt,
+      provider,
+      timeoutMs,
+      strategy: 'PARAPHRASE_RANDOM_STRING_V1',
+      explorationSeed: 'seed-leak-test',
+    })
+    const leaked = result.candidates[0]!
+    expect(leaked.rejectionReasons).toContain('SEED_LEAK')
+    expect(leaked.content.title).not.toContain(strings[0])
   })
 
   it('rejects only violated hard constraints, not unknown constraints', async () => {
@@ -613,7 +725,7 @@ describe('initial generation pipeline', () => {
     ])
   })
 
-  it('keeps quality dominant over axis coverage and bounds the coverage bonus', () => {
+  it('selects by quality minus redundancy without facet or axis bonuses', () => {
     const firstAxes: FrameCandidate['hypothesis']['axes'] = {
       goal: 'learn',
       beneficiary: 'families',
@@ -660,18 +772,37 @@ describe('initial generation pipeline', () => {
         string,
         unknown
       >
-      const axisCoverageBonus = components.axisCoverageBonus as number
-      expect(typeof axisCoverageBonus).toBe('number')
-      expect(axisCoverageBonus).toBeGreaterThanOrEqual(0)
-      expect(axisCoverageBonus).toBeLessThanOrEqual(0.04)
-      if (candidate.displayPosition === 1) {
-        expect(axisCoverageBonus).toBe(0)
-      }
+      expect(components).toHaveProperty('q')
+      expect(components).toHaveProperty('redundancy')
+      expect(components).toHaveProperty('score')
+      expect(components).not.toHaveProperty('axisCoverageBonus')
+      expect(components).not.toHaveProperty('facetBonus')
     }
+  })
+
+  it('recomputes initial MMR redundancy after each selection', () => {
+    const axes: NonNullable<FrameCandidate['hypothesis']['axes']> = {
+      goal: 'learn',
+      beneficiary: 'families',
+      motivation: 'convenience',
+      mechanism: 'newsletter',
+      timeHorizon: 'months',
+      risk: 'low',
+    }
+    const first = makeSelectionCandidate(1, axes)
+    const second = makeSelectionCandidate(2, axes)
+    first.qualityScore = 0.8
+    second.qualityScore = 0.7
+    selectCandidates([first, second], [first, second], [
+      [1, 0.4],
+      [0.4, 1],
+    ])
+    expect(first.selectionScore).toBeCloseTo(0.8)
+    expect(second.selectionScore).toBeCloseTo(0.64)
     expect(
-      (higherQuality.selectionMetadata.components as Record<string, unknown>)
-        .axisCoverageBonus,
-    ).toBe(0.02)
+      (second.selectionMetadata.components as Record<string, number>)
+        .redundancy,
+    ).toBeCloseTo(0.4)
   })
 
   it('keeps Node.js in the generated subject', async () => {
@@ -705,12 +836,61 @@ describe('initial generation pipeline', () => {
   it('rejects low quality and generic first tests', async () => {
     const result = await generate('low-quality')
     expect(result.candidates[0]?.rejectionReasons).toContain(
-      'LOW_QUALITY:intentAlignment',
+      'LOW_SCORE:intentCompatibility',
     )
     expect(result.candidates[0]?.rejectionReasons).toContain(
       'GENERIC_FIRST_TEST',
     )
     expect(result.candidates[0]?.genericFirstTest).toBe(true)
+  })
+
+  it('records incomplete, invalid-evidence, and restatement floor failures', async () => {
+    const baseProvider = createModelProvider({ MODEL_MODE: 'mock' })
+    const provider: ModelProvider = {
+      identity: baseProvider.identity,
+      async generateStructured(request) {
+        const output = await baseProvider.generateStructured(request)
+        if (request.task === 'frame') {
+          const result = output as { candidates: FrameCandidate[] }
+          return {
+            candidates: result.candidates.map((candidate, index) =>
+              index === 0
+                ? {
+                    ...candidate,
+                    title: '   ',
+                    hypothesis: {
+                      ...candidate.hypothesis,
+                      supportingFactRefs: ['f999'],
+                    },
+                  }
+                : candidate,
+            ),
+          }
+        }
+        if (request.task === 'evaluate') {
+          const result = output as {
+            evaluations: Array<{
+              nonObviousness: { score: number; rationale: string }
+            }>
+          }
+          result.evaluations[0]!.nonObviousness = {
+            score: 0,
+            rationale: 'This restates the prompt.',
+          }
+          return result
+        }
+        return output
+      },
+      embed: (texts, signal) => baseProvider.embed(texts, signal),
+    }
+    const result = await generatePipeline({ prompt, provider, timeoutMs })
+    expect(result.candidates[0]?.rejectionReasons).toEqual(
+      expect.arrayContaining([
+        'INCOMPLETE:title',
+        'INVALID_EVIDENCE_REF:f999',
+        'RESTATEMENT',
+      ]),
+    )
   })
 
   it('shows fewer than four directions when only two candidates pass', async () => {
@@ -804,7 +984,7 @@ describe('initial generation pipeline', () => {
     )
     expect(selected.length).toBeLessThanOrEqual(4)
     expect(selected[0]?.selectionMetadata).toMatchObject({
-      policyVersion: 'initial-mmr-v2',
+      policyVersion: 'initial-mmr-v3',
       randomized: false,
       note: 'deterministic policy; selectionProbability is not a propensity for off-policy evaluation',
       rank: 1,

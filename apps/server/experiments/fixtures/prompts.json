@@ -1,0 +1,26 @@
+{
+  "label": "EVALUATION FIXTURES - synthetic ambiguous prompts written for development evaluation. Not real user behavior.",
+  "version": "eval-fixtures-v1",
+  "prompts": [
+    {"id": "p01-bakery", "pattern": "hyphenated hard ban", "prompt": "I want to test whether my neighborhood can support a bakery that helps busy families. No-ads."},
+    {"id": "p02-learn-spanish", "pattern": "no constraint", "prompt": "I keep saying I'll learn Spanish."},
+    {"id": "p03-team-meetings", "pattern": "soft preference", "prompt": "Our team meetings feel useless lately. I'd prefer not to add more tools."},
+    {"id": "p04-side-income", "pattern": "explicit budget limit", "prompt": "I want some side income but I can't spend more than $200 to start."},
+    {"id": "p05-garden", "pattern": "no constraint", "prompt": "Do something with the empty lot behind our building."},
+    {"id": "p06-parents-app", "pattern": "must-not verb", "prompt": "Build something for parents of toddlers. It must not collect children's data."},
+    {"id": "p07-career", "pattern": "no constraint", "prompt": "I'm a nurse and I'm tired."},
+    {"id": "p08-newsletter", "pattern": "time constraint", "prompt": "Start a newsletter about local politics, but I only have two hours a week."},
+    {"id": "p09-fitness", "pattern": "hard requirement", "prompt": "Help me get fit. It has to work without a gym."},
+    {"id": "p10-open-source", "pattern": "no constraint", "prompt": "I maintain an open source library and nobody contributes."},
+    {"id": "p11-restaurant-waste", "pattern": "coordinated ban", "prompt": "Reduce food waste at my restaurant. We must not buy or install new equipment."},
+    {"id": "p12-book", "pattern": "no constraint", "prompt": "I think I have a book in me."},
+    {"id": "p13-elderly-neighbors", "pattern": "privacy ban", "prompt": "Help the elderly people on my street. No-contact with their families unless they ask."},
+    {"id": "p14-saas-churn", "pattern": "no-code modifier (not a ban)", "prompt": "Our no-code SaaS loses users after the first week."},
+    {"id": "p15-move-city", "pattern": "no constraint", "prompt": "Should I move to Berlin?"},
+    {"id": "p16-club", "pattern": "multiple hard bans", "prompt": "Start a running club. No fees and no-alcohol events."},
+    {"id": "p17-school-lunch", "pattern": "stakeholder constraint", "prompt": "Make school lunches better at my kid's school without asking the school for money."},
+    {"id": "p18-portfolio", "pattern": "no constraint", "prompt": "My design portfolio isn't getting me interviews."},
+    {"id": "p19-podcast", "pattern": "allowed vs banned", "prompt": "Grow my podcast. I must not run ads, I can sell merch."},
+    {"id": "p20-research-lab", "pattern": "deadline", "prompt": "Our lab needs a better way to share data before the grant review in March."}
+  ]
+}

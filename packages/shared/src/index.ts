@@ -8,6 +8,14 @@ export const UnaryOperatorSchema = z.enum([
   'INVERT',
   'TRANSPLANT',
 ])
+export const GenerationStrategySchema = z.enum([
+  'JOINT_AXIS_V1',
+  'JOINT_AXIS_FREE_V1',
+  'INDEPENDENT_SAME_PROMPT_V1',
+  'PARAPHRASE_ENSEMBLE_V1',
+  'PARAPHRASE_RANDOM_STRING_V1',
+  'SSOT_V1',
+])
 export const NodeStatusSchema = z.enum([
   'VISIBLE',
   'PINNED',
@@ -91,7 +99,7 @@ export const ExtractionOutputSchema = z
 export const HypothesisSchema = z
   .object({
     statement: z.string().min(1),
-    axes: AxesSchema,
+    axes: AxesSchema.nullable().optional(),
     assumptions: z.array(z.string().min(1)).min(1),
     supportingFactRefs: z.array(z.string().regex(/^f\d+$/)),
     counterevidence: z.array(z.string()),
@@ -111,7 +119,7 @@ export const FrameCandidateSchema = z
     strongestObjection: z.string().min(1),
     firstTest: z.string().min(1),
     mechanism: z.string().min(1),
-    facets: z.array(z.string().min(1)).min(1).max(6),
+    facets: z.array(z.string().min(1)).min(1).max(6).optional(),
     distance: z.enum(['near', 'adjacent', 'leap']),
   })
   .strict()
@@ -119,6 +127,19 @@ export const FrameCandidateSchema = z
 export const FrameOutputSchema = z
   .object({
     candidates: z.array(FrameCandidateSchema).min(4).max(8),
+  })
+  .strict()
+
+export const FrameSingleOutputSchema = z
+  .object({
+    candidate: FrameCandidateSchema,
+  })
+  .strict()
+
+export const SsotOutputSchema = z
+  .object({
+    seed: z.string().min(1).max(64),
+    candidate: FrameCandidateSchema,
   })
   .strict()
 
@@ -200,6 +221,78 @@ export const EvaluateOutputSchema = z
   })
   .strict()
 
+export const RubricCriterionSchema = z
+  .object({
+    score: z.number().int().min(0).max(2),
+    rationale: z.string().trim().min(1).max(400),
+  })
+  .strict()
+
+export const CandidateEvaluationV2Schema = z
+  .object({
+    candidateKey: z.string().min(1),
+    constraints: z.array(
+      z
+        .object({
+          constraintRef: z.string().regex(/^c\d+$/),
+          status: z.enum(['satisfied', 'violated', 'unknown']),
+          rationale: z.string().min(1),
+        })
+        .strict(),
+    ),
+    intentCompatibility: RubricCriterionSchema,
+    decisionUsefulness: RubricCriterionSchema,
+    specificityCoherence: RubricCriterionSchema,
+    firstTestExecutability: RubricCriterionSchema,
+    nonObviousness: RubricCriterionSchema,
+  })
+  .strict()
+
+export const EvaluateOutputV2Schema = z
+  .object({
+    evaluations: z.array(CandidateEvaluationV2Schema),
+  })
+  .strict()
+
+export const FunctionalEquivalenceOutputSchema = z
+  .object({
+    verdict: z.enum(['equivalent', 'related_but_distinct', 'distinct']),
+    rationale: z.string().trim().min(1).max(400),
+  })
+  .strict()
+
+export const LegacyCandidateQualitySchema = z
+  .object({
+    intentAlignment: EvaluationDimensionSchema,
+    usefulness: EvaluationDimensionSchema,
+    specificity: EvaluationDimensionSchema,
+  })
+  .strict()
+
+export const RubricQualitySchema = z
+  .object({
+    rubricVersion: z.literal('candidate-rubric-v2'),
+    criteria: z
+      .object({
+        intentCompatibility: RubricCriterionSchema.extend({ weight: z.number() }),
+        decisionUsefulness: RubricCriterionSchema.extend({ weight: z.number() }),
+        specificityCoherence: RubricCriterionSchema.extend({ weight: z.number() }),
+        firstTestExecutability: RubricCriterionSchema.extend({ weight: z.number() }),
+        nonObviousness: RubricCriterionSchema.extend({ weight: z.number() }),
+      })
+      .strict(),
+    q: z.number(),
+    floor: z
+      .object({ passed: z.boolean(), failures: z.array(z.string()) })
+      .strict(),
+  })
+  .strict()
+
+export const CandidateQualitySchema = z.union([
+  LegacyCandidateQualitySchema,
+  RubricQualitySchema,
+])
+
 export const ProjectSchema = z
   .object({
     id: z.string().uuid(),
@@ -265,14 +358,9 @@ export const CandidateDtoSchema = z
     duplicateOfNodeId: z.string().uuid().nullable(),
     content: IdeaContentSchema,
     constraintEvaluations: z.array(ConstraintEvaluationDtoSchema),
-    quality: z
-      .object({
-        intentAlignment: EvaluationDimensionSchema,
-        usefulness: EvaluationDimensionSchema,
-        specificity: EvaluationDimensionSchema,
-      })
-      .strict(),
+    quality: CandidateQualitySchema,
     qualityScore: z.number(),
+    generationMeta: z.record(z.string(), z.unknown()).nullable().optional(),
     eligibility: z.enum(['ELIGIBLE', 'REJECTED']),
     rejectionReasons: z.array(z.string()),
     selectionState: z
@@ -298,6 +386,8 @@ export const GenerationRunSchema = z
     planningFeatures: z.record(z.string(), z.unknown()).nullable(),
     schemaVersion: z.string(),
     selectionPolicyVersion: z.string(),
+    generationStrategy: GenerationStrategySchema.nullable().optional(),
+    rubricVersion: z.string().nullable().optional(),
     dedupMode: z.enum(['EMBEDDING', 'TEXT_FALLBACK']).nullable(),
     degraded: z.boolean(),
     attempts: z.array(z.unknown()),
@@ -351,6 +441,7 @@ export const GenerationEventSchema = z
 
 export type ModelMode = z.infer<typeof ModelModeSchema>
 export type UnaryOperator = z.infer<typeof UnaryOperatorSchema>
+export type GenerationStrategy = z.infer<typeof GenerationStrategySchema>
 export type NodeStatus = z.infer<typeof NodeStatusSchema>
 export type MockScenario = z.infer<typeof MockScenarioSchema>
 export type Axes = z.infer<typeof AxesSchema>
@@ -366,6 +457,11 @@ export type ExpandOutput = z.infer<typeof ExpandOutputSchema>
 export type EditableIdeaFields = z.infer<typeof EditableIdeaFieldsSchema>
 export type CandidateEvaluation = z.infer<typeof CandidateEvaluationSchema>
 export type EvaluateOutput = z.infer<typeof EvaluateOutputSchema>
+export type CandidateEvaluationV2 = z.infer<
+  typeof CandidateEvaluationV2Schema
+>
+export type EvaluateOutputV2 = z.infer<typeof EvaluateOutputV2Schema>
+export type CandidateQuality = z.infer<typeof CandidateQualitySchema>
 export type ProjectDto = z.infer<typeof ProjectSchema>
 export type GraphNodeDto = z.infer<typeof GraphNodeSchema>
 export type GraphEdgeDto = z.infer<typeof GraphEdgeSchema>
