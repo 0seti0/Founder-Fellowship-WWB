@@ -28,6 +28,7 @@ import {
   FRAME_RANDOM_STRING_PROMPT_VERSION,
   SSOT_PROMPT_VERSION,
 } from '../generation/prompts'
+import { parsePartialJson } from './partialJson'
 
 export type GenerationTask =
   'extract' | 'frame' | 'evaluate' | 'expand' | 'compare'
@@ -40,6 +41,7 @@ export type StructuredGenerationRequest = {
   input: unknown
   signal: AbortSignal
   onUsage?: (usage: Record<string, number>) => void
+  onPartial?: (partial: unknown) => void
 }
 
 export type ModelProvider = {
@@ -679,6 +681,21 @@ type AnthropicContentBlock = {
   text?: unknown
 }
 
+type AnthropicStreamEvent = {
+  type?: unknown
+  error?: { type?: unknown }
+  message?: { usage?: { input_tokens?: unknown } }
+  index?: unknown
+  content_block?: { type?: unknown }
+  delta?: {
+    type?: unknown
+    partial_json?: unknown
+    text?: unknown
+    stop_reason?: unknown
+  }
+  usage?: { output_tokens?: unknown }
+}
+
 class AnthropicProvider implements ModelProvider {
   readonly identity: { provider: string; model: string }
 
@@ -720,21 +737,23 @@ class AnthropicProvider implements ModelProvider {
       ...(this.configuration.LLM_TEMPERATURE === undefined
         ? {}
         : { temperature: this.configuration.LLM_TEMPERATURE }),
+      ...(request.onPartial ? { stream: true } : {}),
     }
-    const envelope = (await this.requestJson(
-      `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: request.signal,
+    const url = `${this.configuration.LLM_BASE_URL.replace(/\/+$/, '')}/messages`
+    const init: RequestInit = {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
       },
-      request.signal,
-    )) as {
+      body: JSON.stringify(body),
+      signal: request.signal,
+    }
+    if (request.onPartial) {
+      return this.requestStream(url, init, request)
+    }
+    const envelope = (await this.requestJson(url, init, request.signal)) as {
       type?: string
       error?: { type?: string }
       stop_reason?: string
@@ -777,6 +796,184 @@ class AnthropicProvider implements ModelProvider {
       )
       .map((block) => (typeof block.text === 'string' ? block.text : ''))
       .join('')
+  }
+
+  private async requestStream(
+    url: string,
+    init: RequestInit,
+    request: StructuredGenerationRequest,
+  ): Promise<unknown> {
+    try {
+      const response = await fetch(url, init)
+      if (!response.ok) {
+        throw new ProviderError(
+          `Anthropic provider returned HTTP ${response.status}`,
+          'PROVIDER_ERROR',
+        )
+      }
+      if (!response.body) {
+        throw new ProviderError(
+          'Anthropic provider returned no content',
+          'PROVIDER_ERROR',
+        )
+      }
+
+      let inputTokens: number | undefined
+      let outputTokens: number | undefined
+      let stopReason: string | undefined
+      let toolBuffer = ''
+      let textBuffer = ''
+      let toolSeen = false
+      let contentBlocks = 0
+      let lastPartialAt = Number.NEGATIVE_INFINITY
+      const blockTypes = new Map<number, string>()
+      const dataLines: string[] = []
+      const decoder = new TextDecoder()
+      const reader = response.body.getReader()
+      let lineBuffer = ''
+
+      const dispatchEvent = () => {
+        if (dataLines.length === 0) return
+        const data = dataLines.join('\n')
+        dataLines.length = 0
+        if (data === '[DONE]') return
+        let parsedEvent: unknown
+        try {
+          parsedEvent = JSON.parse(data) as unknown
+        } catch {
+          throw new ProviderError(
+            'Anthropic provider returned an invalid stream event',
+            'PROVIDER_ERROR',
+          )
+        }
+        if (!parsedEvent || typeof parsedEvent !== 'object') {
+          throw new ProviderError(
+            'Anthropic provider returned an invalid stream event',
+            'PROVIDER_ERROR',
+          )
+        }
+        const event = parsedEvent as AnthropicStreamEvent
+        if (event.type === 'error') {
+          const errorType = event.error?.type
+          throw new ProviderError(
+            `Anthropic provider returned an error${typeof errorType === 'string' ? ` (${errorType})` : ''}`,
+            'PROVIDER_ERROR',
+          )
+        }
+        if (event.type === 'message_start') {
+          const tokens = event.message?.usage?.input_tokens
+          if (typeof tokens === 'number') inputTokens = tokens
+        } else if (event.type === 'content_block_start') {
+          const index =
+            typeof event.index === 'number' ? event.index : blockTypes.size
+          const type = event.content_block?.type
+          if (typeof type === 'string') blockTypes.set(index, type)
+          contentBlocks += 1
+          if (type === 'tool_use') toolSeen = true
+        } else if (event.type === 'content_block_delta') {
+          const type = blockTypes.get(
+            typeof event.index === 'number' ? event.index : 0,
+          )
+          if (
+            type === 'tool_use' &&
+            event.delta?.type === 'input_json_delta' &&
+            typeof event.delta.partial_json === 'string'
+          ) {
+            toolBuffer += event.delta.partial_json
+            const now = Date.now()
+            if (now - lastPartialAt >= 250) {
+              lastPartialAt = now
+              try {
+                request.onPartial?.(parsePartialJson(toolBuffer))
+              } catch {}
+            }
+          } else if (
+            type === 'text' &&
+            event.delta?.type === 'text_delta' &&
+            typeof event.delta.text === 'string'
+          ) {
+            textBuffer += event.delta.text
+          }
+        } else if (event.type === 'message_delta') {
+          if (typeof event.delta?.stop_reason === 'string')
+            stopReason = event.delta.stop_reason
+          const tokens = event.usage?.output_tokens
+          if (typeof tokens === 'number') outputTokens = tokens
+        }
+      }
+
+      const processLine = (line: string) => {
+        if (line === '') {
+          dispatchEvent()
+          return
+        }
+        if (line.startsWith(':')) return
+        const separator = line.indexOf(':')
+        const field = separator < 0 ? line : line.slice(0, separator)
+        if (field !== 'data') return
+        let value = separator < 0 ? '' : line.slice(separator + 1)
+        if (value.startsWith(' ')) value = value.slice(1)
+        dataLines.push(value)
+      }
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          lineBuffer += decoder.decode(value, { stream: true })
+          let newline = lineBuffer.indexOf('\n')
+          while (newline >= 0) {
+            processLine(lineBuffer.slice(0, newline).replace(/\r$/u, ''))
+            lineBuffer = lineBuffer.slice(newline + 1)
+            newline = lineBuffer.indexOf('\n')
+          }
+        }
+        lineBuffer += decoder.decode()
+        if (lineBuffer) processLine(lineBuffer.replace(/\r$/u, ''))
+        dispatchEvent()
+      } finally {
+        reader.releaseLock()
+      }
+
+      if (inputTokens !== undefined && outputTokens !== undefined) {
+        request.onUsage?.({
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+        })
+      }
+      if (stopReason === 'max_tokens') {
+        throw new ProviderError(
+          `Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=${this.configuration.LLM_MAX_TOKENS})`,
+          'PROVIDER_ERROR',
+        )
+      }
+      if (contentBlocks === 0) {
+        throw new ProviderError(
+          'Anthropic provider returned no content',
+          'PROVIDER_ERROR',
+        )
+      }
+      if (toolSeen) {
+        try {
+          return JSON.parse(toolBuffer) as unknown
+        } catch {
+          return toolBuffer
+        }
+      }
+      return textBuffer
+    } catch (error) {
+      if (error instanceof ProviderError) throw error
+      if (
+        request.signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw new ProviderError('Model request timed out', 'TIMEOUT')
+      }
+      throw new ProviderError(
+        'Anthropic provider request failed',
+        'PROVIDER_ERROR',
+      )
+    }
   }
 
   async embed(): Promise<number[][]> {
@@ -865,18 +1062,65 @@ class MockProvider implements ModelProvider {
       }
     }
 
+    let result: unknown
     switch (request.task) {
       case 'extract':
-        return this.extract(request.input, attempt)
+        result = this.extract(request.input, attempt)
+        break
       case 'frame':
-        return this.frame(request)
+        result = this.frame(request)
+        break
       case 'evaluate':
-        return this.evaluate(request.input)
+        result = this.evaluate(request.input)
+        break
       case 'expand':
-        return this.expand(request.input)
+        result = this.expand(request.input)
+        break
       case 'compare':
-        return this.compare(request.input)
+        result = this.compare(request.input)
+        break
     }
+    if (request.onPartial)
+      this.emitPartials(request.task, result, request.onPartial)
+    return result
+  }
+
+  private emitPartials(
+    task: GenerationTask,
+    output: unknown,
+    onPartial: (partial: unknown) => void,
+  ) {
+    if (!output || typeof output !== 'object') return
+    const property =
+      task === 'frame'
+        ? 'candidates'
+        : task === 'evaluate'
+          ? 'evaluations'
+          : null
+    if (!property) return
+    const values = (output as Record<string, unknown>)[property]
+    if (!Array.isArray(values)) return
+    const emit = (partial: unknown) => {
+      try {
+        onPartial(partial)
+      } catch {}
+    }
+    for (let count = 1; count <= values.length; count += 1) {
+      emit({ [property]: values.slice(0, count) })
+    }
+    if (values.length === 0) return
+    const last = values[values.length - 1]
+    if (!last || typeof last !== 'object') return
+    const partialLast =
+      task === 'frame'
+        ? {
+            key: (last as Record<string, unknown>).key,
+            title: (last as Record<string, unknown>).title,
+          }
+        : { candidateKey: (last as Record<string, unknown>).candidateKey }
+    emit({
+      [property]: [...values.slice(0, -1), partialLast],
+    })
   }
 
   async embed(texts: string[], signal: AbortSignal): Promise<number[][]> {

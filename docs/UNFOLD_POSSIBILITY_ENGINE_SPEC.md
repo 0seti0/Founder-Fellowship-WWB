@@ -53,6 +53,10 @@ Operator preconditions and effects remain deterministic. Axes may be absent;
 planning treats absent axes as unavailable features, and the REFRAME
 beneficiary check is skipped when the parent has no axes.
 
+Anthropic streams partial frame drafts and rubric scores into run progress
+while those calls are in flight. Drafts are display-only, never persisted as
+candidates or graph nodes; validated frame output replaces them.
+
 ## Schemas and persisted versions
 
 - New initial runs use schema `idea-schema-v2`; historical `stage1-v1` remains

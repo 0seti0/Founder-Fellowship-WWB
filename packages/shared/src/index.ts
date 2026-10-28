@@ -361,6 +361,32 @@ export const RunProgressStageSchema = z.enum([
   'SELECTED',
 ])
 
+export const RubricCriterionKeySchema = z.enum([
+  'intentCompatibility',
+  'decisionUsefulness',
+  'specificityCoherence',
+  'firstTestExecutability',
+  'nonObviousness',
+])
+
+export const ProgressDraftSchema = z
+  .object({
+    ordinal: z.number().int().min(1),
+    title: z.string(),
+    summary: z.string().nullable(),
+  })
+  .strict()
+
+export const ProgressPartialScoreSchema = z
+  .object({
+    candidateKey: z.string(),
+    scores: z.partialRecord(
+      RubricCriterionKeySchema,
+      z.number().int().min(0).max(2),
+    ),
+  })
+  .strict()
+
 export const ProgressItemSchema = z
   .object({
     ref: z.string(),
@@ -401,6 +427,8 @@ export const RunProgressSchema = z
     facts: z.array(ProgressItemSchema),
     constraints: z.array(ProgressItemSchema),
     candidates: z.array(ProgressCandidateSchema),
+    drafts: z.array(ProgressDraftSchema).optional(),
+    partialScores: z.array(ProgressPartialScoreSchema).optional(),
   })
   .strict()
 
@@ -523,6 +551,9 @@ export type RunProgressStage = z.infer<typeof RunProgressStageSchema>
 export type ProgressItem = z.infer<typeof ProgressItemSchema>
 export type ProgressCandidate = z.infer<typeof ProgressCandidateSchema>
 export type RunProgress = z.infer<typeof RunProgressSchema>
+export type ProgressDraft = z.infer<typeof ProgressDraftSchema>
+export type ProgressPartialScore = z.infer<typeof ProgressPartialScoreSchema>
+export type RubricCriterionKey = z.infer<typeof RubricCriterionKeySchema>
 export type ProjectDto = z.infer<typeof ProjectSchema>
 export type GraphNodeDto = z.infer<typeof GraphNodeSchema>
 export type GraphEdgeDto = z.infer<typeof GraphEdgeSchema>

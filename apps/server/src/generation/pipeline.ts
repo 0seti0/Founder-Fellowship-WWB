@@ -151,6 +151,91 @@ async function emitProgress(
   } catch {}
 }
 
+type ProgressEmitter = {
+  partial(progress: RunProgress): void
+  stage(progress: RunProgress): Promise<void>
+}
+
+const progressStageIndex: Record<RunProgress['stage'], number> = {
+  STARTED: 0,
+  EXTRACTED: 1,
+  FRAMED: 2,
+  EVALUATED: 3,
+  SELECTED: 4,
+}
+
+function createProgressEmitter(
+  onProgress: PipelineOptions['onProgress'],
+): ProgressEmitter {
+  let chain = Promise.resolve()
+  let currentStageIndex = -1
+  let lastPartialAt = Number.NEGATIVE_INFINITY
+  let pending: RunProgress | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let partialQueued = false
+  let stagePending = false
+
+  const write = async (snapshot: RunProgress) => {
+    try {
+      await onProgress?.(snapshot)
+    } catch {}
+  }
+  const schedulePending = () => {
+    if (!pending || timer || partialQueued || stagePending) return
+    const delay = Math.max(0, 400 - (Date.now() - lastPartialAt))
+    timer = setTimeout(() => {
+      timer = null
+      const snapshot = pending
+      pending = null
+      if (snapshot) enqueuePartial(snapshot)
+    }, delay)
+  }
+  const enqueuePartial = (snapshot: RunProgress) => {
+    partialQueued = true
+    chain = chain
+      .then(async () => {
+        lastPartialAt = Date.now()
+        await write(snapshot)
+      })
+      .then(() => {
+        partialQueued = false
+        schedulePending()
+      })
+  }
+
+  return {
+    partial(snapshot) {
+      if (progressStageIndex[snapshot.stage] < currentStageIndex) return
+      if (stagePending) return
+      pending = snapshot
+      if (
+        !partialQueued &&
+        !timer &&
+        !stagePending &&
+        Date.now() - lastPartialAt >= 400
+      ) {
+        pending = null
+        enqueuePartial(snapshot)
+      } else {
+        schedulePending()
+      }
+    },
+    async stage(snapshot) {
+      const stageIndex = progressStageIndex[snapshot.stage]
+      if (stageIndex < currentStageIndex) return
+      currentStageIndex = stageIndex
+      stagePending = true
+      pending = null
+      if (timer) clearTimeout(timer)
+      timer = null
+      const stageWrite = chain.then(() => write(snapshot))
+      chain = stageWrite
+      await stageWrite
+      stagePending = false
+    },
+  }
+}
+
 function progressItems(spans: EvidenceSpan[]): ProgressItem[] {
   return spans.map(({ item, start, end }) => ({
     ref: item.ref,
@@ -282,6 +367,7 @@ export async function generatePipeline({
   currentDate: suppliedCurrentDate,
 }: PipelineOptions): Promise<PipelineResult> {
   const currentDate = suppliedCurrentDate ?? currentDateContext()
+  const progress = createProgressEmitter(onProgress)
   const attempts: PipelineAttempt[] = []
   const extracted = await extract(
     prompt,
@@ -294,10 +380,12 @@ export async function generatePipeline({
   const constraints = extracted.constraints.map(
     (span) => span.item as ExtractedConstraint,
   )
-  await emitProgress(onProgress, {
+  const factsProgress = progressItems(extracted.facts)
+  const constraintsProgress = progressItems(extracted.constraints)
+  await progress.stage({
     stage: 'EXTRACTED',
-    facts: progressItems(extracted.facts),
-    constraints: progressItems(extracted.constraints),
+    facts: factsProgress,
+    constraints: constraintsProgress,
     candidates: [],
   })
   const framed = await frame(
@@ -310,15 +398,43 @@ export async function generatePipeline({
     strategy,
     currentDate,
     explorationSeed,
+    (partial) => {
+      const rawCandidates =
+        partial &&
+        typeof partial === 'object' &&
+        Array.isArray((partial as { candidates?: unknown }).candidates)
+          ? (partial as { candidates: unknown[] }).candidates
+          : []
+      const drafts = rawCandidates.flatMap((value, index) => {
+        if (!value || typeof value !== 'object') return []
+        const entry = value as Record<string, unknown>
+        if (typeof entry.title !== 'string' || !entry.title.trim()) return []
+        return [
+          {
+            ordinal: index + 1,
+            title: entry.title,
+            summary: typeof entry.summary === 'string' ? entry.summary : null,
+          },
+        ]
+      })
+      progress.partial({
+        stage: 'EXTRACTED',
+        facts: factsProgress,
+        constraints: constraintsProgress,
+        candidates: [],
+        drafts,
+      })
+    },
   )
-  await emitProgress(onProgress, {
+  const framedProgress = {
     stage: 'FRAMED',
-    facts: progressItems(extracted.facts),
-    constraints: progressItems(extracted.constraints),
+    facts: factsProgress,
+    constraints: constraintsProgress,
     candidates: framed.candidates.map((candidate, index) =>
       framedProgressCandidate(candidate, index + 1),
     ),
-  })
+  } satisfies RunProgress
+  await progress.stage(framedProgress)
   const evaluations = await evaluateV2(
     framed.candidates,
     prompt,
@@ -327,6 +443,42 @@ export async function generatePipeline({
     timeoutMs,
     attempts,
     currentDate,
+    (partial) => {
+      const rawEvaluations =
+        partial &&
+        typeof partial === 'object' &&
+        Array.isArray((partial as { evaluations?: unknown }).evaluations)
+          ? (partial as { evaluations: unknown[] }).evaluations
+          : []
+      const criterionKeys = [
+        'intentCompatibility',
+        'decisionUsefulness',
+        'specificityCoherence',
+        'firstTestExecutability',
+        'nonObviousness',
+      ] as const
+      const partialScores = rawEvaluations.flatMap((value) => {
+        if (!value || typeof value !== 'object') return []
+        const entry = value as Record<string, unknown>
+        if (typeof entry.candidateKey !== 'string') return []
+        const scores: Partial<Record<(typeof criterionKeys)[number], number>> =
+          {}
+        for (const key of criterionKeys) {
+          const criterion = entry[key]
+          if (
+            criterion &&
+            typeof criterion === 'object' &&
+            Number.isInteger((criterion as { score?: unknown }).score) &&
+            (criterion as { score: number }).score >= 0 &&
+            (criterion as { score: number }).score <= 2
+          ) {
+            scores[key] = (criterion as { score: number }).score
+          }
+        }
+        return [{ candidateKey: entry.candidateKey, scores }]
+      })
+      progress.partial({ ...framedProgress, partialScores })
+    },
   )
   return completePipeline({
     facts: extracted.facts,
@@ -340,6 +492,7 @@ export async function generatePipeline({
     strategy,
     additionalRejectionReasons: framed.rejectionReasons,
     onProgress,
+    progress,
   })
 }
 
@@ -681,6 +834,7 @@ async function frame(
   strategy: GenerationStrategy,
   currentDate: CurrentDateContext,
   explorationSeed?: string,
+  onPartial?: (partial: unknown) => void,
 ): Promise<{
   candidates: FrameCandidate[]
   metadata: Record<string, unknown>
@@ -725,6 +879,7 @@ async function frame(
             constraints,
             strategy,
           },
+          onPartial,
         },
         timeoutMs,
         attempts,
@@ -924,6 +1079,7 @@ async function evaluateV2(
   timeoutMs: number,
   attempts: PipelineAttempt[],
   currentDate: CurrentDateContext,
+  onPartial?: (partial: unknown) => void,
 ): Promise<CandidateEvaluationV2[]> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await invoke(
@@ -942,6 +1098,7 @@ async function evaluateV2(
             content: candidate,
           })),
         },
+        onPartial,
       },
       timeoutMs,
       attempts,
@@ -1034,6 +1191,7 @@ async function completePipeline({
   existingChildren = [],
   additionalRejectionReasons = new Map(),
   onProgress,
+  progress,
 }: {
   facts: EvidenceSpan[]
   constraints: EvidenceSpan[]
@@ -1055,6 +1213,7 @@ async function completePipeline({
   }>
   additionalRejectionReasons?: Map<string, string[]>
   onProgress?: PipelineOptions['onProgress']
+  progress?: ProgressEmitter
 }): Promise<PipelineResult> {
   const promptFactIds = new Map<string, string>()
   for (const span of facts) {
@@ -1145,14 +1304,16 @@ async function completePipeline({
     },
   )
 
-  await emitProgress(onProgress, {
+  const evaluatedSnapshot: RunProgress = {
     stage: 'EVALUATED',
     facts: progressItems(facts),
     constraints: progressItems(constraints),
     candidates: candidates.map((candidate) =>
       evaluatedProgressCandidate(candidate, constraints),
     ),
-  })
+  }
+  if (progress) await progress.stage(evaluatedSnapshot)
+  else await emitProgress(onProgress, evaluatedSnapshot)
 
   let dedupMode: 'EMBEDDING' | 'TEXT_FALLBACK' = 'EMBEDDING'
   let degraded = false
@@ -1240,14 +1401,16 @@ async function completePipeline({
     ok: true,
     reason: SELECTION_POLICY_VERSION,
   })
-  await emitProgress(onProgress, {
+  const selectedSnapshot: RunProgress = {
     stage: 'SELECTED',
     facts: progressItems(facts),
     constraints: progressItems(constraints),
     candidates: candidates.map((candidate) =>
       selectedProgressCandidate(candidate, constraints),
     ),
-  })
+  }
+  if (progress) await progress.stage(selectedSnapshot)
+  else await emitProgress(onProgress, selectedSnapshot)
   return {
     facts: facts.filter((span) => span.item.ref.startsWith('f')),
     constraints,
