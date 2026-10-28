@@ -471,6 +471,14 @@ function createController(
   const cardFor = (candidate: PresenterCandidate) =>
     cardsEl.querySelector<HTMLElement>(`[data-card="${candidate.id}"]`)
 
+  const fadeOut = (card: HTMLElement) => {
+    animate(card, [{ opacity: 1 }, { opacity: 0 }], {
+      duration: 400,
+    }).finished.then(
+      () => card.remove(),
+      () => card.remove(),
+    )
+  }
   // Display-only previews of streamed model output; replaced by validated data.
   const draftCards = new Map<number, HTMLElement>()
   let draftColumns = 0
@@ -489,7 +497,16 @@ function createController(
     const width = nextColumns === 3 ? 440 : 340
     const left =
       (STAGE_WIDTH - (nextColumns * width + (nextColumns - 1) * 40)) / 2
-    const relayout = nextColumns !== draftColumns
+    // A framing retry restarts the stream, so drop cards it no longer has.
+    const live = new Set(drafts.map((draft) => draft.ordinal))
+    let removed = false
+    for (const [ordinal, card] of draftCards) {
+      if (live.has(ordinal)) continue
+      fadeOut(card)
+      draftCards.delete(ordinal)
+      removed = true
+    }
+    const relayout = removed || nextColumns !== draftColumns
     draftColumns = nextColumns
     drafts.forEach((draft, index) => {
       let card = draftCards.get(draft.ordinal)
@@ -531,14 +548,7 @@ function createController(
     })
   }
   const clearDrafts = () => {
-    for (const card of draftCards.values()) {
-      animate(card, [{ opacity: 1 }, { opacity: 0 }], {
-        duration: 400,
-      }).finished.then(
-        () => card.remove(),
-        () => card.remove(),
-      )
-    }
+    for (const card of draftCards.values()) fadeOut(card)
     const had = draftCards.size > 0
     draftCards.clear()
     draftColumns = 0
