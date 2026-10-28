@@ -86,8 +86,7 @@ export const FRAME_PARAPHRASE_PROMPT_VERSION = 'frame-paraphrase-v1'
 export const FRAME_RANDOM_STRING_PROMPT_VERSION = 'frame-random-string-v1'
 export const SSOT_PROMPT_VERSION = 'ssot-v1'
 export const EVALUATE_RUBRIC_PROMPT_VERSION = 'evaluate-rubric-v2'
-export const FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION =
-  'functional-equivalence-v1'
+export const FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION = 'functional-equivalence-v1'
 export const EXPAND_PROMPT_VERSION_V2 = 'expand-v2'
 
 const SHARED_HYPOTHESIS_RULES = `- The goal is a hypothesis, not confirmed user intent. State its assumptions
@@ -241,8 +240,8 @@ Return JSON matching the provided schema with one verdict:
 - "distinct": different strategic options.
 
 Base the verdict on the goal each candidate pursues, its mechanism, and what
-the user would actually do, not on shared words. Give a one-sentence
-rationale that names the strategic option of each candidate. Respect the listed
+the user would actually do, not on shared words. Give a one-sentence rationale
+that names the strategic option of each candidate. Respect the listed
 constraints as context only; do not judge quality.`
 
 export const EXPAND_SYSTEM_PROMPT_V2 = `You transform one selected idea using the

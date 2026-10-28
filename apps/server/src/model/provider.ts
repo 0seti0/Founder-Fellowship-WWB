@@ -18,7 +18,8 @@ import {
   SSOT_PROMPT_VERSION,
 } from '../generation/prompts'
 
-export type GenerationTask = 'extract' | 'frame' | 'evaluate' | 'expand'
+export type GenerationTask =
+  'extract' | 'frame' | 'evaluate' | 'expand' | 'compare'
 
 export type StructuredGenerationRequest = {
   task: GenerationTask
@@ -470,6 +471,8 @@ class MockProvider implements ModelProvider {
         return this.evaluate(request.input)
       case 'expand':
         return this.expand(request.input)
+      case 'compare':
+        return this.compare(request.input)
     }
   }
 
@@ -731,31 +734,31 @@ class MockProvider implements ModelProvider {
             ? 1
             : 2
       return {
-          candidateKey: candidate.key,
-          constraints: constraints.map((constraint) => {
-            let status: 'satisfied' | 'violated' | 'unknown' =
-              constraint.strength === 'hard'
-                ? evaluateHardConstraint(candidate, constraint)
-                : 'satisfied'
-            if (this.scenario === 'hard-violation') {
-              if (index === 0 && constraint.strength === 'hard')
-                status = 'violated'
-              else if (index === 1 && constraint.strength === 'hard')
-                status = 'unknown'
-            } else if (constraint.strength === 'soft') {
+        candidateKey: candidate.key,
+        constraints: constraints.map((constraint) => {
+          let status: 'satisfied' | 'violated' | 'unknown' =
+            constraint.strength === 'hard'
+              ? evaluateHardConstraint(candidate, constraint)
+              : 'satisfied'
+          if (this.scenario === 'hard-violation') {
+            if (index === 0 && constraint.strength === 'hard')
+              status = 'violated'
+            else if (index === 1 && constraint.strength === 'hard')
               status = 'unknown'
-            }
-            return {
-              constraintRef: constraint.ref,
-              status,
-              rationale:
-                status === 'unknown'
-                  ? 'The direction does not provide enough detail to verify this.'
-                  : status === 'violated'
-                    ? 'The proposed direction conflicts with this requirement.'
-                    : 'The direction is consistent with this constraint.',
-            }
-          }),
+          } else if (constraint.strength === 'soft') {
+            status = 'unknown'
+          }
+          return {
+            constraintRef: constraint.ref,
+            status,
+            rationale:
+              status === 'unknown'
+                ? 'The direction does not provide enough detail to verify this.'
+                : status === 'violated'
+                  ? 'The proposed direction conflicts with this requirement.'
+                  : 'The direction is consistent with this constraint.',
+          }
+        }),
         intentCompatibility: {
           score,
           rationale: 'The candidate fits a plausible reading of the prompt.',
@@ -779,6 +782,47 @@ class MockProvider implements ModelProvider {
       }
     })
     return { evaluations }
+  }
+
+  private compare(input: unknown) {
+    const { left, right } = input as {
+      left: Pick<FrameCandidate, 'title' | 'summary' | 'mechanism'>
+      right: Pick<FrameCandidate, 'title' | 'summary' | 'mechanism'>
+    }
+    const vector = (candidate: typeof left) =>
+      embedText(
+        `${candidate.title} ${candidate.summary} ${candidate.mechanism}`,
+      )
+    const leftVector = vector(left)
+    const rightVector = vector(right)
+    let dot = 0
+    let leftMagnitude = 0
+    let rightMagnitude = 0
+    for (let index = 0; index < leftVector.length; index += 1) {
+      dot += leftVector[index]! * rightVector[index]!
+      leftMagnitude += leftVector[index]! ** 2
+      rightMagnitude += rightVector[index]! ** 2
+    }
+    const similarity =
+      leftMagnitude && rightMagnitude
+        ? dot / Math.sqrt(leftMagnitude * rightMagnitude)
+        : 0
+    const verdict =
+      similarity >= 0.85
+        ? 'equivalent'
+        : similarity >= 0.5
+          ? 'related_but_distinct'
+          : 'distinct'
+    return {
+      verdict,
+      rationale: `“${left.title}” and “${right.title}” ${
+        verdict === 'equivalent'
+          ? 'pursue the same strategic option.'
+          : verdict === 'related_but_distinct'
+            ? 'share some ground but lead to different actions.'
+            : 'pursue different strategic options.'
+      }`,
+    }
   }
 }
 
