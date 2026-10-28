@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { submitPrompt } from './helpers'
 
 const evidenceDirectory = resolve('e2e-evidence')
 
@@ -107,7 +108,7 @@ for (const width of [1280, 1440]) {
         .fill(
           'I want to test whether my neighborhood can support a bakery that helps busy families.',
         )
-      await page.getByRole('button', { name: 'Unfold' }).click()
+      await submitPrompt(page, testInfo.project.name !== 'mobile')
       await expect(page.getByTestId('graph-node-idea').first()).toBeVisible()
       await capture('initial-graph')
 
@@ -274,7 +275,7 @@ for (const width of [1280, 1440]) {
         .getByRole('textbox', { name: 'Your prompt' })
         .fill('I want to test a neighborhood bakery with a new model.')
       await page.getByLabel('Mock scenario').selectOption('operator-gaps')
-      await page.getByRole('button', { name: 'Unfold' }).click()
+      await submitPrompt(page, testInfo.project.name !== 'mobile')
       await expect(page.getByTestId('graph-node-idea').first()).toBeVisible()
       const ideaCards = page.getByTestId('graph-node-idea')
       let gapsNodeFound = false

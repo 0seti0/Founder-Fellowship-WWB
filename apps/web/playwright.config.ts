@@ -1,10 +1,15 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const serverPort = process.env.E2E_SERVER_PORT ?? '3001'
+const webPort = process.env.E2E_WEB_PORT ?? '5173'
+const serverUrl = `http://127.0.0.1:${serverPort}`
+const webUrl = `http://127.0.0.1:${webPort}`
+
 export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/global-setup.ts',
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: webUrl,
   },
   projects: [
     {
@@ -25,13 +30,13 @@ export default defineConfig({
   webServer: [
     {
       command: 'pnpm --filter @unfold/server dev',
-      url: 'http://127.0.0.1:3001/health',
+      url: `${serverUrl}/health`,
       reuseExistingServer: false,
       timeout: 120_000,
       env: {
         MODEL_MODE: 'mock',
         NODE_ENV: 'test',
-        PORT: '3001',
+        PORT: serverPort,
         DATABASE_URL:
           process.env.DATABASE_URL_TEST ??
           'mysql://unfold:unfold@localhost:3306/unfold_test',
@@ -39,9 +44,13 @@ export default defineConfig({
     },
     {
       command: 'pnpm dev',
-      url: 'http://127.0.0.1:5173',
+      url: webUrl,
       reuseExistingServer: false,
       timeout: 120_000,
+      env: {
+        E2E_SERVER_URL: serverUrl,
+        E2E_WEB_PORT: webPort,
+      },
     },
   ],
 })
