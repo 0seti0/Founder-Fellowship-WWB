@@ -370,6 +370,25 @@ describe('initial generation pipeline', () => {
         explorationSeed: 'eval-v1',
       })
       const frameCalls = requests.filter((request) => request.task === 'frame')
+      const dateContexts = requests.map(
+        (request) => (request.input as { currentDate?: unknown }).currentDate,
+      )
+      expect(
+        dateContexts.every(
+          (currentDate) =>
+            currentDate !== undefined &&
+            typeof currentDate === 'object' &&
+            currentDate !== null,
+        ),
+      ).toBe(true)
+      expect(
+        new Set(dateContexts.map((value) => JSON.stringify(value))).size,
+      ).toBe(1)
+      const extractInput = requests.find(
+        (request) => request.task === 'extract',
+      )!.input as { prompt: string; originalPrompt?: string }
+      expect(extractInput.prompt).toBe(prompt)
+      expect(extractInput.originalPrompt).toBeUndefined()
       expect(frameCalls).toHaveLength(
         strategy === 'JOINT_AXIS_V1' || strategy === 'JOINT_AXIS_FREE_V1'
           ? 1
@@ -437,7 +456,7 @@ describe('initial generation pipeline', () => {
         const output = await baseProvider.generateStructured(request)
         if (
           request.task !== 'frame' ||
-          request.promptVersion !== 'frame-random-string-v1'
+          request.promptVersion !== 'frame-random-string-v2'
         )
           return output
         const result = output as { candidate: FrameCandidate }
@@ -1066,7 +1085,7 @@ describe('initial generation pipeline', () => {
     await expect(
       provider.generateStructured({
         task: 'extract',
-        promptVersion: 'extract-v1',
+        promptVersion: 'extract-v2',
         schemaVersion: 'stage1-v1',
         system: '',
         input: { prompt },

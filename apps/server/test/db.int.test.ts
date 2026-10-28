@@ -205,6 +205,18 @@ describe('MySQL integration', () => {
       selectionPolicyVersion: 'initial-mmr-v3',
       generationStrategy: 'JOINT_AXIS_FREE_V1',
       rubricVersion: 'candidate-rubric-v2',
+      promptVersions: {
+        extract: 'extract-v2',
+        frame: 'frame-axis-free-v2',
+        evaluate: 'evaluate-rubric-v3',
+      },
+    })
+    expect(project.latestRun?.planningFeatures).toMatchObject({
+      currentDate: {
+        today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        weekday: expect.any(String),
+        timezone: expect.any(String),
+      },
     })
 
     const { db, pool } = getDatabase(databaseUrl)
@@ -244,7 +256,7 @@ describe('MySQL integration', () => {
       expect(candidate.generationMeta).toMatchObject({
         strategy: 'JOINT_AXIS_FREE_V1',
         strategyVersion: 'v1',
-        promptVersion: 'frame-axis-free-v1',
+        promptVersion: 'frame-axis-free-v2',
       })
       const components = candidate.selectionMetadata.components as
         Record<string, unknown> | undefined
@@ -566,11 +578,18 @@ describe('MySQL integration', () => {
 
       expect(run.operator).toBe(operator)
       expect(run.operatorRegistryVersion).toBe('operators-v1')
-      expect(run.promptVersions.expand).toBe('expand-v2')
-      expect(run.promptVersions.evaluate).toBe('evaluate-rubric-v2')
+      expect(run.promptVersions.expand).toBe('expand-v3')
+      expect(run.promptVersions.evaluate).toBe('evaluate-rubric-v3')
       expect(run.schemaVersion).toBe('idea-schema-v2')
       expect(run.selectionPolicyVersion).toBe('expansion-mmr-v2')
       expect(run.rubricVersion).toBe('candidate-rubric-v2')
+      expect(run.planningFeatures).toMatchObject({
+        currentDate: {
+          today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+          weekday: expect.any(String),
+          timezone: expect.any(String),
+        },
+      })
       expect(runCandidates).toHaveLength(6)
       expect(selected.length).toBeGreaterThanOrEqual(1)
       expect(selected.length).toBeLessThanOrEqual(3)

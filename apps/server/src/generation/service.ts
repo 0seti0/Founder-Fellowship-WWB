@@ -41,7 +41,7 @@ import {
 } from './pipeline'
 import {
   EVALUATE_RUBRIC_PROMPT_VERSION,
-  EXPAND_PROMPT_VERSION_V2,
+  EXPAND_PROMPT_VERSION_V3,
   EXTRACT_PROMPT_VERSION,
   FRAME_AXIS_FREE_PROMPT_VERSION,
 } from './prompts'
@@ -56,6 +56,7 @@ import {
   PLANNING_FEATURES_VERSION,
   SUITABILITY_VERSION,
 } from '../operators/planning'
+import { currentDateContext, type CurrentDateContext } from './currentDate'
 
 export class GenerationServiceError extends Error {
   constructor(
@@ -140,11 +141,13 @@ export async function startInitial(
   },
 ): Promise<{ projectId: string; runId: string; completion: Promise<void> }> {
   const projectId = await createProjectRoot(connection, options.prompt)
+  const currentDate = currentDateContext()
   const runId = await beginInitial(connection, {
     projectId,
     mockScenario: options.mockScenario,
     modelMode: options.modelMode,
     timeoutMs: options.timeoutMs,
+    currentDate,
   })
   const completion = executeInitial(connection, {
     projectId,
@@ -152,6 +155,7 @@ export async function startInitial(
     mockScenario: options.mockScenario,
     modelMode: options.modelMode,
     timeoutMs: options.timeoutMs,
+    currentDate,
   }).then(
     () => undefined,
     () => {
@@ -170,6 +174,7 @@ export async function beginInitial(
     mockScenario?: MockScenario
     modelMode: ModelMode
     timeoutMs: number
+    currentDate: CurrentDateContext
   },
 ): Promise<string> {
   const { db } = connection
@@ -201,6 +206,7 @@ export async function beginInitial(
 
   const runId = randomUUID()
   const startedAt = new Date()
+  const currentDate = options.currentDate
   const provider = createModelProvider(
     { MODEL_MODE: options.modelMode },
     { mockScenario: options.mockScenario },
@@ -229,6 +235,7 @@ export async function beginInitial(
     mockScenario: options.mockScenario ?? null,
     startedAt,
     finishedAt: null,
+    planningFeatures: { currentDate },
     progress: {
       stage: 'STARTED',
       facts: [],
@@ -247,6 +254,7 @@ export async function executeInitial(
     mockScenario?: MockScenario
     modelMode: ModelMode
     timeoutMs: number
+    currentDate: CurrentDateContext
   },
 ) {
   const { db } = connection
@@ -270,6 +278,7 @@ export async function executeInitial(
       provider,
       timeoutMs: options.timeoutMs,
       strategy: 'JOINT_AXIS_FREE_V1',
+      currentDate: options.currentDate,
       onProgress: async (progress) => {
         try {
           await db
@@ -373,8 +382,9 @@ export async function generateInitial(
     timeoutMs: number
   },
 ) {
-  const runId = await beginInitial(connection, options)
-  return executeInitial(connection, { ...options, runId })
+  const currentDate = currentDateContext()
+  const runId = await beginInitial(connection, { ...options, currentDate })
+  return executeInitial(connection, { ...options, runId, currentDate })
 }
 
 export async function projectOperatorOptions(
@@ -514,12 +524,14 @@ export async function expandNode(
   )
   const runId = randomUUID()
   const startedAt = new Date()
+  const currentDate = currentDateContext()
   const planningMetadata = {
     version: PLANNING_FEATURES_VERSION,
     suitabilityVersion: SUITABILITY_VERSION,
     features: planningFeatures,
     suitability: suitability.score,
     adjustments: suitability.breakdown,
+    currentDate,
   }
   await db.insert(generationRuns).values({
     id: runId,
@@ -530,7 +542,7 @@ export async function expandNode(
     modelName: provider.identity.model,
     promptVersions: {
       evaluate: EVALUATE_RUBRIC_PROMPT_VERSION,
-      expand: EXPAND_PROMPT_VERSION_V2,
+      expand: EXPAND_PROMPT_VERSION_V3,
     },
     operator: options.operator,
     parentNodeId: parent.id,
@@ -573,6 +585,7 @@ export async function expandNode(
       suitabilityScore: suitability.score,
       provider,
       timeoutMs: options.timeoutMs,
+      currentDate,
       existingChildren: existingChildren.map(({ node }) => ({
         id: node.id,
         title: node.title,
@@ -614,7 +627,7 @@ export async function expandNode(
             duplicateOfNodeId:
               candidate.selectionMetadata.duplicateOfNodeId ?? null,
           },
-          promptVersion: EXPAND_PROMPT_VERSION_V2,
+          promptVersion: EXPAND_PROMPT_VERSION_V3,
           schemaVersion: SCHEMA_VERSION,
           policyVersion: EXPANSION_SELECTION_POLICY_VERSION,
           nodeId: null,

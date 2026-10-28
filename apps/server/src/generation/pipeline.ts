@@ -23,7 +23,6 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import {
   EVALUATE_RUBRIC_PROMPT_VERSION,
   EVALUATE_RUBRIC_SYSTEM_PROMPT,
-  EVALUATE_PROMPT_VERSION,
   EXTRACT_PROMPT_VERSION,
   EXTRACT_SYSTEM_PROMPT,
   FRAME_AXIS_FREE_PROMPT_VERSION,
@@ -37,11 +36,12 @@ import {
   SSOT_SYSTEM_PROMPT,
   FRAME_PROMPT_VERSION,
   FRAME_SYSTEM_PROMPT,
-  EXPAND_PROMPT_VERSION_V2,
+  EXPAND_PROMPT_VERSION_V3,
   EXPAND_SCHEMA_VERSION,
-  EXPAND_SYSTEM_PROMPT_V2,
+  EXPAND_SYSTEM_PROMPT_V3,
   frameParaphraseSystemPrompt,
 } from './prompts'
+import { currentDateContext, type CurrentDateContext } from './currentDate'
 import {
   ProviderError,
   type ModelProvider,
@@ -139,6 +139,7 @@ type PipelineOptions = {
   strategy?: GenerationStrategy
   explorationSeed?: string
   onProgress?: (progress: RunProgress) => void | Promise<void>
+  currentDate?: CurrentDateContext
 }
 
 async function emitProgress(
@@ -268,7 +269,7 @@ function selectedProgressCandidate(
 const promptVersions = {
   extract: EXTRACT_PROMPT_VERSION,
   frame: FRAME_PROMPT_VERSION,
-  evaluate: EVALUATE_PROMPT_VERSION,
+  evaluate: EVALUATE_RUBRIC_PROMPT_VERSION,
 }
 
 export async function generatePipeline({
@@ -278,9 +279,17 @@ export async function generatePipeline({
   strategy = 'JOINT_AXIS_FREE_V1',
   explorationSeed,
   onProgress,
+  currentDate: suppliedCurrentDate,
 }: PipelineOptions): Promise<PipelineResult> {
+  const currentDate = suppliedCurrentDate ?? currentDateContext()
   const attempts: PipelineAttempt[] = []
-  const extracted = await extract(prompt, provider, timeoutMs, attempts)
+  const extracted = await extract(
+    prompt,
+    provider,
+    timeoutMs,
+    attempts,
+    currentDate,
+  )
   const facts = extracted.facts.map((span) => span.item as ExtractedFact)
   const constraints = extracted.constraints.map(
     (span) => span.item as ExtractedConstraint,
@@ -299,6 +308,7 @@ export async function generatePipeline({
     timeoutMs,
     attempts,
     strategy,
+    currentDate,
     explorationSeed,
   )
   await emitProgress(onProgress, {
@@ -316,6 +326,7 @@ export async function generatePipeline({
     provider,
     timeoutMs,
     attempts,
+    currentDate,
   )
   return completePipeline({
     facts: extracted.facts,
@@ -353,6 +364,7 @@ export async function expandPipeline(options: {
   suitabilityScore?: number
   provider: ModelProvider
   timeoutMs: number
+  currentDate?: CurrentDateContext
   existingChildren?: Array<{
     id: string
     title: string
@@ -360,6 +372,7 @@ export async function expandPipeline(options: {
     mechanism: string
   }>
 }) {
+  const currentDate = options.currentDate ?? currentDateContext()
   const attempts: PipelineAttempt[] = []
   const definition = OPERATOR_REGISTRY[options.operator]
   let content: IdeaContent[] | undefined
@@ -369,10 +382,11 @@ export async function expandPipeline(options: {
       options.provider,
       {
         task: 'expand',
-        promptVersion: EXPAND_PROMPT_VERSION_V2,
+        promptVersion: EXPAND_PROMPT_VERSION_V3,
         schemaVersion: EXPAND_SCHEMA_VERSION,
-        system: EXPAND_SYSTEM_PROMPT_V2,
+        system: EXPAND_SYSTEM_PROMPT_V3,
         input: {
+          currentDate,
           operator: options.operator,
           instruction: definition.instruction,
           exclusions: definition.exclusions,
@@ -458,6 +472,7 @@ export async function expandPipeline(options: {
     options.provider,
     options.timeoutMs,
     attempts,
+    currentDate,
   )
   return completePipeline({
     facts: options.facts.map((item) => ({
@@ -492,6 +507,7 @@ async function extract(
   provider: ModelProvider,
   timeoutMs: number,
   attempts: PipelineAttempt[],
+  currentDate: CurrentDateContext,
 ): Promise<{ facts: EvidenceSpan[]; constraints: EvidenceSpan[] }> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await invoke(
@@ -501,7 +517,7 @@ async function extract(
         promptVersion: promptVersions.extract,
         schemaVersion: SCHEMA_VERSION,
         system: EXTRACT_SYSTEM_PROMPT,
-        input: { prompt },
+        input: { prompt, currentDate },
       },
       timeoutMs,
       attempts,
@@ -573,6 +589,7 @@ async function frame(
   timeoutMs: number,
   attempts: PipelineAttempt[],
   strategy: GenerationStrategy,
+  currentDate: CurrentDateContext,
   explorationSeed?: string,
 ): Promise<{
   candidates: FrameCandidate[]
@@ -602,6 +619,7 @@ async function frame(
         schemaVersion: SCHEMA_VERSION,
         system: axisFree ? FRAME_AXIS_FREE_SYSTEM_PROMPT : FRAME_SYSTEM_PROMPT,
         input: {
+          currentDate,
           originalPrompt: prompt,
           facts,
           constraints,
@@ -696,6 +714,7 @@ async function frame(
             schemaVersion: SCHEMA_VERSION,
             system,
             input: {
+              currentDate,
               originalPrompt: prompt,
               facts,
               constraints,
@@ -810,6 +829,7 @@ async function evaluateV2(
   provider: ModelProvider,
   timeoutMs: number,
   attempts: PipelineAttempt[],
+  currentDate: CurrentDateContext,
 ): Promise<CandidateEvaluationV2[]> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await invoke(
@@ -820,6 +840,7 @@ async function evaluateV2(
         schemaVersion: SCHEMA_VERSION,
         system: EVALUATE_RUBRIC_SYSTEM_PROMPT,
         input: {
+          currentDate,
           originalPrompt,
           constraints,
           candidates: candidates.map((candidate) => ({

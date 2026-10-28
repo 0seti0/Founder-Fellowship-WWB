@@ -5,6 +5,7 @@ import {
 } from '@unfold/shared'
 import { ProviderError, type ModelProvider } from '../model/provider'
 import { PipelineError, type PipelineAttempt } from './pipeline'
+import { currentDateContext, type CurrentDateContext } from './currentDate'
 import {
   FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION,
   FUNCTIONAL_EQUIVALENCE_SYSTEM_PROMPT,
@@ -18,10 +19,12 @@ export async function compareCandidates(
     right: FrameCandidate
     constraints: ExtractedConstraint[]
     timeoutMs?: number
+    currentDate?: CurrentDateContext
   },
 ) {
   const attempts: PipelineAttempt[] = []
   const { timeoutMs = 30_000, originalPrompt, left, right, constraints } = input
+  const currentDate = input.currentDate ?? currentDateContext()
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const signal = AbortSignal.timeout(timeoutMs)
     let usage: Record<string, number> | undefined
@@ -33,6 +36,7 @@ export async function compareCandidates(
         schemaVersion: FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION,
         system: FUNCTIONAL_EQUIVALENCE_SYSTEM_PROMPT,
         input: {
+          currentDate,
           originalPrompt,
           constraints,
           left,

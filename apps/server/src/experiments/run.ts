@@ -9,6 +9,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { performance } from 'node:perf_hooks'
 import { env } from '../env'
+import { currentDateContext } from '../generation/currentDate'
 import { compareCandidates } from '../generation/functionalEquivalence'
 import {
   EMBEDDING_DEDUP_THRESHOLD,
@@ -148,6 +149,7 @@ async function compareFloorPassingCandidates(
   result: PipelineResult,
   originalPrompt: string,
   timeoutMs: number,
+  currentDate: ReturnType<typeof currentDateContext>,
 ) {
   const passing = result.candidates.filter(
     (candidate) => candidate.eligibility === 'ELIGIBLE',
@@ -208,6 +210,7 @@ async function compareFloorPassingCandidates(
           right: rightCandidate.content,
           constraints,
           timeoutMs,
+          currentDate,
         })
         comparisons.push({
           leftId: leftCandidate.id,
@@ -249,6 +252,7 @@ async function recordPromptStrategy(
   seed: string,
   provider: ModelProvider,
 ) {
+  const currentDate = currentDateContext()
   const startedAt = performance.now()
   let result: PipelineResult | null = null
   let generationError: unknown
@@ -259,6 +263,7 @@ async function recordPromptStrategy(
       timeoutMs: env.MODEL_TIMEOUT_MS,
       strategy,
       explorationSeed: seed,
+      currentDate,
     })
   } catch (error) {
     generationError = error
@@ -271,6 +276,7 @@ async function recordPromptStrategy(
         result,
         fixture.prompt,
         env.MODEL_TIMEOUT_MS,
+        currentDate,
       )
     : { comparisons: [], details: [], embeddingSimilarities: [] }
   const comparisonLatencyMs = Math.round(

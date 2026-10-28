@@ -1,8 +1,11 @@
-export const EXTRACT_PROMPT_VERSION = 'extract-v1'
-export const FRAME_PROMPT_VERSION = 'frame-v1'
-export const EVALUATE_PROMPT_VERSION = 'evaluate-v1'
+export const EXTRACT_PROMPT_VERSION = 'extract-v2'
+export const FRAME_PROMPT_VERSION = 'frame-v2'
+export const EVALUATE_PROMPT_VERSION = 'evaluate-v2'
 export const EXPAND_PROMPT_VERSION = 'expand-v1'
 export const EXPAND_SCHEMA_VERSION = 'expand-v1'
+
+export const CURRENT_DATE_INSTRUCTION =
+  "The input includes currentDate (today's date, weekday and timezone); treat it as the real current date when writing time references such as deadlines, days of the week or 'this month', and never assume a different year."
 
 export const EXTRACT_SYSTEM_PROMPT = `You extract only what a user's prompt explicitly states.
 
@@ -21,7 +24,9 @@ Constraints:
 - basis is "explicit" when the prompt states the constraint directly, otherwise
   "inferred". A hard constraint must have basis "explicit".
 
-If the prompt states nothing of a kind, return an empty list for it.`
+If the prompt states nothing of a kind, return an empty list for it.
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const FRAME_SYSTEM_PROMPT = `You propose contrastive hypotheses about the deeper goal behind an
 underspecified prompt, and one concrete direction for each.
@@ -47,7 +52,9 @@ Rules:
 - Each direction must preserve the prompt's core intent, name the assumptions it
   changes, explain why it might fit, give its strongest objection, and propose a
   first test the user could run this week: a specific action with a concrete
-  object and an observable result.`
+  object and an observable result.
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const EVALUATE_SYSTEM_PROMPT = `You evaluate candidate directions for a prompt.
 
@@ -67,7 +74,9 @@ Quality labels (low, medium, high), each with a one-sentence rationale:
 - specificity: is it concrete enough to act on, including its first test?
 
 Judge the direction on its own content. Do not reward length, polish, or
-novelty for its own sake.`
+novelty for its own sake.
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const EXPAND_SYSTEM_PROMPT = `You transform one selected idea using the
 specified unary operator. Return JSON matching the provided expansion schema.
@@ -80,14 +89,15 @@ action with an observable result.`
 // Lead-authored prompt texts. Copy VERBATIM into apps/server/src/generation/prompts.ts.
 // Do not reword. Version constants are part of the contract.
 
-export const FRAME_AXIS_FREE_PROMPT_VERSION = 'frame-axis-free-v1'
-export const FRAME_SINGLE_PROMPT_VERSION = 'frame-single-v1'
-export const FRAME_PARAPHRASE_PROMPT_VERSION = 'frame-paraphrase-v1'
-export const FRAME_RANDOM_STRING_PROMPT_VERSION = 'frame-random-string-v1'
-export const SSOT_PROMPT_VERSION = 'ssot-v1'
-export const EVALUATE_RUBRIC_PROMPT_VERSION = 'evaluate-rubric-v2'
-export const FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION = 'functional-equivalence-v1'
+export const FRAME_AXIS_FREE_PROMPT_VERSION = 'frame-axis-free-v2'
+export const FRAME_SINGLE_PROMPT_VERSION = 'frame-single-v2'
+export const FRAME_PARAPHRASE_PROMPT_VERSION = 'frame-paraphrase-v2'
+export const FRAME_RANDOM_STRING_PROMPT_VERSION = 'frame-random-string-v2'
+export const SSOT_PROMPT_VERSION = 'ssot-v2'
+export const EVALUATE_RUBRIC_PROMPT_VERSION = 'evaluate-rubric-v3'
+export const FUNCTIONAL_EQUIVALENCE_PROMPT_VERSION = 'functional-equivalence-v2'
 export const EXPAND_PROMPT_VERSION_V2 = 'expand-v2'
+export const EXPAND_PROMPT_VERSION_V3 = 'expand-v3'
 
 const SHARED_HYPOTHESIS_RULES = `- The goal is a hypothesis, not confirmed user intent. State its assumptions
   and falsifiers: observations that would show the hypothesis is wrong.
@@ -123,7 +133,9 @@ ${SHARED_HYPOTHESIS_RULES}
 - Do not use a fixed checklist of dimensions to manufacture variety. Choose the
   differences that matter most for this prompt.
 - Do not add a candidate only to fill the count. Fewer strong candidates are
-  better than a weak or redundant one.`
+  better than a weak or redundant one.
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const FRAME_SINGLE_SYSTEM_PROMPT = `You propose one hypothesis about the deeper goal behind an
 underspecified prompt, and one concrete direction for it.
@@ -131,7 +143,9 @@ underspecified prompt, and one concrete direction for it.
 Return exactly one candidate as JSON matching the provided schema.
 
 Rules:
-${SHARED_HYPOTHESIS_RULES}`
+${SHARED_HYPOTHESIS_RULES}
+
+${CURRENT_DATE_INSTRUCTION}`
 
 // Six semantically equivalent paraphrases of FRAME_SINGLE_SYSTEM_PROMPT's
 // opening instruction. The shared rules are appended unchanged to each.
@@ -157,7 +171,9 @@ export function frameParaphraseSystemPrompt(index: number) {
 Return exactly one candidate as JSON matching the provided schema.
 
 Rules:
-${SHARED_HYPOTHESIS_RULES}`
+${SHARED_HYPOTHESIS_RULES}
+
+${CURRENT_DATE_INSTRUCTION}`
 }
 
 export const RANDOM_STRING_ADDENDUM = `
@@ -180,7 +196,9 @@ copy the seed into any other field.
 Return exactly one candidate as JSON matching the provided schema.
 
 Rules:
-${SHARED_HYPOTHESIS_RULES}`
+${SHARED_HYPOTHESIS_RULES}
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const EVALUATE_RUBRIC_SYSTEM_PROMPT = `You evaluate candidate directions for an underspecified prompt.
 You did not write these candidates. Judge each candidate independently, on its
@@ -224,7 +242,9 @@ nonObviousness (relative to the original prompt):
 - 1: Predictable extension or mostly new wording.
 - 2: Non-obvious reframing or mechanism that remains relevant.
 
-Do not reward length, polish, or novelty that loses relevance to the prompt.`
+Do not reward length, polish, or novelty that loses relevance to the prompt.
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const FUNCTIONAL_EQUIVALENCE_SYSTEM_PROMPT = `You compare two candidate directions proposed for the same
 underspecified prompt.
@@ -242,7 +262,9 @@ Return JSON matching the provided schema with one verdict:
 Base the verdict on the goal each candidate pursues, its mechanism, and what
 the user would actually do, not on shared words. Give a one-sentence rationale
 that names the strategic option of each candidate. Respect the listed
-constraints as context only; do not judge quality.`
+constraints as context only; do not judge quality.
+
+${CURRENT_DATE_INSTRUCTION}`
 
 export const EXPAND_SYSTEM_PROMPT_V2 = `You transform one selected idea using the
 specified unary operator. Return JSON matching the provided expansion schema.
@@ -252,3 +274,7 @@ effect. Use only supplied supporting fact references. Do not return ids,
 status, parent links, or persistence fields. Facets are optional; omit them
 unless they add information. Each first test must be a small action with an
 observable success or failure signal.`
+
+export const EXPAND_SYSTEM_PROMPT_V3 = `${EXPAND_SYSTEM_PROMPT_V2}
+
+${CURRENT_DATE_INSTRUCTION}`

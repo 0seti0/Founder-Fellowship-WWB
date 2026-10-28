@@ -6,9 +6,17 @@ describe('environment configuration', () => {
     const parsed = parseEnv({})
     expect(parsed.MODEL_MODE).toBe('mock')
     expect(parsed.MODEL_TIMEOUT_MS).toBe(30_000)
+    expect(parsed.APP_TIMEZONE).toBeUndefined()
     expect(parsed.DATABASE_URL).toBe(
       'mysql://unfold:unfold@localhost:3306/unfold',
     )
+  })
+
+  it('accepts an optional application timezone', () => {
+    expect(parseEnv({ APP_TIMEZONE: 'America/Los_Angeles' }).APP_TIMEZONE).toBe(
+      'America/Los_Angeles',
+    )
+    expect(parseEnv({ APP_TIMEZONE: '' }).APP_TIMEZONE).toBeUndefined()
   })
 
   it('accepts a positive model call timeout', () => {
