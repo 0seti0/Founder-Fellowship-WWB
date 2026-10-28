@@ -12,6 +12,7 @@ import {
   OperatorOptionSchema,
   ProjectSchema,
   PromptItemSchema,
+  RunProgressSchema,
   UnaryOperatorSchema,
 } from '@unfold/shared'
 import { and, eq } from 'drizzle-orm'
@@ -28,6 +29,7 @@ import {
   getProject,
   listProjects,
   projectOperatorOptions,
+  startInitial,
 } from '../generation/service'
 import {
   SteeringError,
@@ -110,6 +112,40 @@ export const appRouter = t.router({
           timeoutMs: env.MODEL_TIMEOUT_MS,
         })
       }),
+    start: t.procedure
+      .input(
+        z
+          .object({
+            prompt: z.string().trim().min(1).max(4000),
+            mockScenario: MockScenarioSchema.optional(),
+          })
+          .strict(),
+      )
+      .output(
+        z
+          .object({ projectId: z.string().uuid(), runId: z.string().uuid() })
+          .strict(),
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (input.mockScenario && env.MODEL_MODE !== 'mock') {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Mock scenarios are only available in mock mode',
+          })
+        }
+        const started = await startInitial(ctx.getDatabase(), {
+          ...input,
+          modelMode: env.MODEL_MODE,
+          timeoutMs: env.MODEL_TIMEOUT_MS,
+        })
+        void started.completion.catch(() => {
+          console.error('Background generation completion rejected', {
+            projectId: started.projectId,
+            runId: started.runId,
+          })
+        })
+        return { projectId: started.projectId, runId: started.runId }
+      }),
     generateInitial: t.procedure
       .input(
         z
@@ -186,6 +222,66 @@ export const appRouter = t.router({
           return await getProject(ctx.getDatabase(), input.id)
         } catch (error) {
           throwServiceError(error)
+        }
+      }),
+  }),
+  runs: t.router({
+    progress: t.procedure
+      .input(
+        z
+          .object({
+            projectId: z.string().uuid(),
+            runId: z.string().uuid(),
+          })
+          .strict(),
+      )
+      .output(
+        z
+          .object({
+            runId: z.string().uuid(),
+            status: z.enum(['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED']),
+            errorCode: z.string().nullable(),
+            errorMessage: z.string().nullable(),
+            modelProvider: z.string(),
+            modelName: z.string(),
+            selectionPolicyVersion: z.string(),
+            rubricVersion: z.string().nullable(),
+            progress: RunProgressSchema.nullable(),
+          })
+          .strict(),
+      )
+      .query(async ({ ctx, input }) => {
+        const { db } = ctx.getDatabase()
+        const [run] = await db
+          .select({
+            runId: generationRuns.id,
+            status: generationRuns.status,
+            errorCode: generationRuns.errorCode,
+            errorMessage: generationRuns.errorMessage,
+            modelProvider: generationRuns.modelProvider,
+            modelName: generationRuns.modelName,
+            selectionPolicyVersion: generationRuns.selectionPolicyVersion,
+            rubricVersion: generationRuns.rubricVersion,
+            progress: generationRuns.progress,
+          })
+          .from(generationRuns)
+          .where(
+            and(
+              eq(generationRuns.id, input.runId),
+              eq(generationRuns.projectId, input.projectId),
+            ),
+          )
+          .limit(1)
+        if (!run) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'Run not found in project',
+          })
+        }
+        const progress = RunProgressSchema.safeParse(run.progress)
+        return {
+          ...run,
+          progress: progress.success ? progress.data : null,
         }
       }),
   }),

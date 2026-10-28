@@ -5,6 +5,7 @@ import {
   appMeta,
   candidates,
   edges,
+  events,
   generationRuns,
   hypotheses,
   nodes,
@@ -16,6 +17,7 @@ import { appRouter } from '../src/trpc/router'
 import { createContext } from '../src/trpc/context'
 import { applyGraphPatch, GraphPatchError } from '../src/graph/patch'
 import { IdeaContentSchema } from '@unfold/shared'
+import { startInitial } from '../src/generation/service'
 
 const databaseUrl =
   process.env.DATABASE_URL_TEST ??
@@ -57,6 +59,120 @@ describe('MySQL integration', () => {
       .health.db()
     expect(result.status).toBe('ok')
     expect(result.migrationsApplied).toBeGreaterThanOrEqual(1)
+  })
+
+  it('runs initial generation in the background and persists selected progress', async () => {
+    const connection = getDatabase(databaseUrl)
+    const started = await startInitial(connection, {
+      prompt: 'I want to open a bakery for neighbors.',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    await started.completion
+
+    const [run] = await connection.db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.id, started.runId))
+    expect(run?.status).toBe('SUCCEEDED')
+    expect(run?.progress?.stage).toBe('SELECTED')
+
+    const persistedCandidates = await connection.db
+      .select({
+        key: candidates.modelKey,
+        ordinal: candidates.ordinal,
+        selectionState: candidates.selectionState,
+        selectionScore: candidates.selectionScore,
+        displayPosition: candidates.displayPosition,
+      })
+      .from(candidates)
+      .where(eq(candidates.runId, started.runId))
+      .orderBy(candidates.ordinal)
+    const progressCandidates = run!.progress!.candidates
+    expect(
+      progressCandidates.map(
+        ({ key, ordinal, selectionState, displayPosition }) => ({
+          key,
+          ordinal,
+          selectionState,
+          displayPosition,
+        }),
+      ),
+    ).toEqual(
+      persistedCandidates.map(
+        ({ key, ordinal, selectionState, displayPosition }) => ({
+          key,
+          ordinal,
+          selectionState,
+          displayPosition,
+        }),
+      ),
+    )
+    for (const persisted of persistedCandidates) {
+      const progressed = progressCandidates.find(
+        (candidate) => candidate.key === persisted.key,
+      )!
+      if (persisted.selectionScore === null) {
+        expect(progressed.selectionScore).toBeNull()
+      } else {
+        expect(progressed.selectionScore).toBeCloseTo(
+          persisted.selectionScore,
+          14,
+        )
+      }
+    }
+
+    const polled = await appRouter
+      .createCaller(createContext(databaseUrl))
+      .runs.progress({ projectId: started.projectId, runId: started.runId })
+    expect(polled.progress?.stage).toBe('SELECTED')
+  })
+
+  it('keeps the last reached progress stage and records failed background runs', async () => {
+    const connection = getDatabase(databaseUrl)
+    const started = await startInitial(connection, {
+      prompt: 'I want to open a bakery for neighbors.',
+      mockScenario: 'provider-error',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    await started.completion
+
+    const [run] = await connection.db
+      .select()
+      .from(generationRuns)
+      .where(eq(generationRuns.id, started.runId))
+    expect(run?.status).toBe('FAILED')
+    expect(run?.progress?.stage).toBe('STARTED')
+
+    const runEvents = await connection.db
+      .select()
+      .from(events)
+      .where(eq(events.runId, started.runId))
+    expect(runEvents.map((event) => event.type)).toContain('GENERATION_FAILED')
+  })
+
+  it('hides a run when progress is requested through another project', async () => {
+    const connection = getDatabase(databaseUrl)
+    const first = await startInitial(connection, {
+      prompt: 'I want to open a bakery for neighbors.',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    const second = await startInitial(connection, {
+      prompt: 'I want to start a community garden.',
+      modelMode: 'mock',
+      timeoutMs: 5000,
+    })
+    await Promise.all([first.completion, second.completion])
+
+    const caller = appRouter.createCaller(createContext(databaseUrl))
+    await expect(
+      caller.runs.progress({
+        projectId: second.projectId,
+        runId: first.runId,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('persists a selected prompt graph and rolls back a failed graph patch', async () => {

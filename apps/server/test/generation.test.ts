@@ -3,6 +3,7 @@ import type {
   ExtractedConstraint,
   FrameCandidate,
   MockScenario,
+  RunProgress,
 } from '@unfold/shared'
 import {
   createModelProvider,
@@ -206,6 +207,54 @@ function expectContactProhibition(
 }
 
 describe('initial generation pipeline', () => {
+  it('emits stage progress and ignores progress callback failures', async () => {
+    const progress: RunProgress[] = []
+    const result = await generatePipeline({
+      prompt,
+      provider: createModelProvider({ MODEL_MODE: 'mock' }),
+      timeoutMs,
+      onProgress: (snapshot) => {
+        progress.push(snapshot)
+        throw new Error('progress callback failure')
+      },
+    })
+
+    expect(progress.map((snapshot) => snapshot.stage)).toEqual([
+      'EXTRACTED',
+      'FRAMED',
+      'EVALUATED',
+      'SELECTED',
+    ])
+    const framed = progress.find((snapshot) => snapshot.stage === 'FRAMED')!
+    expect(framed.candidates).toHaveLength(result.candidates.length)
+    expect(
+      framed.candidates.every(
+        (candidate) =>
+          candidate.quality === null &&
+          candidate.qualityScore === null &&
+          candidate.eligibility === null &&
+          candidate.selectionState === null &&
+          candidate.selectionScore === null &&
+          candidate.displayPosition === null &&
+          candidate.constraintEvaluations.length === 0 &&
+          candidate.rejectionReasons.length === 0,
+      ),
+    ).toBe(true)
+
+    const selected = progress.find((snapshot) => snapshot.stage === 'SELECTED')!
+    expect(
+      selected.candidates.map(({ key, displayPosition }) => [
+        key,
+        displayPosition,
+      ]),
+    ).toEqual(
+      result.candidates.map((candidate) => [
+        candidate.content.key,
+        candidate.displayPosition,
+      ]),
+    )
+  })
+
   it('records exact evidence spans from the prompt', async () => {
     const result = await generate()
 

@@ -5,6 +5,7 @@ import type {
   IdeaContent,
   Hypothesis,
   MockScenario,
+  RunProgress,
   UnaryOperator,
 } from '@unfold/shared'
 import {
@@ -75,6 +76,7 @@ export const generationRuns = mysqlTable(
     generationStrategy: varchar('generation_strategy', {
       length: 64,
     }).$type<GenerationStrategy>(),
+    progress: json('progress').$type<RunProgress>(),
     rubricVersion: varchar('rubric_version', { length: 64 }),
     selectionPolicyVersion: varchar('selection_policy_version', {
       length: 64,

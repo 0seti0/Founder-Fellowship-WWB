@@ -353,6 +353,57 @@ export const ConstraintEvaluationDtoSchema = z
   })
   .strict()
 
+export const RunProgressStageSchema = z.enum([
+  'STARTED',
+  'EXTRACTED',
+  'FRAMED',
+  'EVALUATED',
+  'SELECTED',
+])
+
+export const ProgressItemSchema = z
+  .object({
+    ref: z.string(),
+    kind: z.enum(['FACT', 'CONSTRAINT']),
+    text: z.string(),
+    evidenceText: z.string(),
+    evidenceStart: z.number().int(),
+    evidenceEnd: z.number().int(),
+    strength: z.enum(['hard', 'soft']).nullable(),
+  })
+  .strict()
+
+export const ProgressCandidateSchema = z
+  .object({
+    key: z.string(),
+    ordinal: z.number().int(),
+    title: z.string(),
+    distance: z.enum(['near', 'adjacent', 'leap']).nullable(),
+    fitRationale: z.string(),
+    strongestObjection: z.string(),
+    firstTest: z.string(),
+    quality: CandidateQualitySchema.nullable(),
+    qualityScore: z.number().nullable(),
+    constraintEvaluations: z.array(ConstraintEvaluationDtoSchema),
+    eligibility: z.enum(['ELIGIBLE', 'REJECTED']).nullable(),
+    rejectionReasons: z.array(z.string()),
+    selectionState: z
+      .enum(['SELECTED', 'NOT_SELECTED', 'REJECTED', 'DUPLICATE'])
+      .nullable(),
+    selectionScore: z.number().nullable(),
+    displayPosition: z.number().int().nullable(),
+  })
+  .strict()
+
+export const RunProgressSchema = z
+  .object({
+    stage: RunProgressStageSchema,
+    facts: z.array(ProgressItemSchema),
+    constraints: z.array(ProgressItemSchema),
+    candidates: z.array(ProgressCandidateSchema),
+  })
+  .strict()
+
 export const CandidateDtoSchema = z
   .object({
     id: z.string().uuid(),
@@ -468,6 +519,10 @@ export type EvaluateOutput = z.infer<typeof EvaluateOutputSchema>
 export type CandidateEvaluationV2 = z.infer<typeof CandidateEvaluationV2Schema>
 export type EvaluateOutputV2 = z.infer<typeof EvaluateOutputV2Schema>
 export type CandidateQuality = z.infer<typeof CandidateQualitySchema>
+export type RunProgressStage = z.infer<typeof RunProgressStageSchema>
+export type ProgressItem = z.infer<typeof ProgressItemSchema>
+export type ProgressCandidate = z.infer<typeof ProgressCandidateSchema>
+export type RunProgress = z.infer<typeof RunProgressSchema>
 export type ProjectDto = z.infer<typeof ProjectSchema>
 export type GraphNodeDto = z.infer<typeof GraphNodeSchema>
 export type GraphEdgeDto = z.infer<typeof GraphEdgeSchema>
