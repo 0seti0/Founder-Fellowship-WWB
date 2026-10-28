@@ -125,6 +125,7 @@ function mockAnthropicFetch(options: { textFirstExtract?: boolean } = {}) {
           delta: { stop_reason: 'tool_use' },
           usage: { output_tokens: 7 },
         },
+        { type: 'message_stop' },
       ])
     }
     return new Response(
@@ -440,6 +441,7 @@ describe('Anthropic live provider', () => {
             delta: { stop_reason: 'tool_use' },
             usage: { output_tokens: 7 },
           },
+          { type: 'message_stop' },
         ],
         'Alpha',
       ),
@@ -471,6 +473,9 @@ describe('Anthropic live provider', () => {
     expect(
       JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)),
     ).toMatchObject({ stream: true })
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14',
+    })
   })
 
   it('rejects streamed max-token truncation after reporting usage', async () => {
@@ -504,6 +509,31 @@ describe('Anthropic live provider', () => {
         'Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=2048)',
     })
     expect(usage).toEqual({ input_tokens: 13, output_tokens: 2048 })
+  })
+
+  it('rejects a stream that ends before message_stop', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      anthropicSseResponse([
+        { type: 'message_start', message: { usage: { input_tokens: 13 } } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"facts":[]}' },
+        },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      request(anthropicProvider(), { onPartial: () => undefined }),
+    ).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+      message: 'Anthropic stream ended before message_stop',
+    })
   })
 
   it('surfaces Anthropic stream error event types', async () => {
@@ -561,6 +591,7 @@ describe('Anthropic live provider', () => {
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     })
+    expect(init?.headers).not.toHaveProperty('anthropic-beta')
     const serializedBody = String(init?.body)
     expect(serializedBody).not.toContain(apiKey)
     expect(JSON.stringify(init?.headers)).toContain(apiKey)

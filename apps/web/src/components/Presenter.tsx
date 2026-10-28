@@ -334,7 +334,8 @@ function createController(
     if (waitingSince !== null) stopWaiting()
     const limit = gates.find((item) => item.level > dataLevel)?.t ?? Infinity
     clock = Math.min(limit, clock + (reduce ? 1000 : delta))
-    while (queue[0] && queue[0].t <= clock) queue.shift()!.run()
+    while (queue[0] && queue[0].t <= clock && queue[0].t < limit)
+      queue.shift()!.run()
   }
   const showWaiting = (level: number, now: number) => {
     const bar = barEl.children[level] as HTMLElement | undefined

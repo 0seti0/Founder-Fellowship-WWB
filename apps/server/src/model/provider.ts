@@ -746,6 +746,11 @@ class AnthropicProvider implements ModelProvider {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
+        // Without this, Claude buffers a tool argument until it is complete,
+        // so a single-array tool input arrives all at once at the end.
+        ...(request.onPartial
+          ? { 'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14' }
+          : {}),
       },
       body: JSON.stringify(body),
       signal: request.signal,
@@ -824,6 +829,7 @@ class AnthropicProvider implements ModelProvider {
       let toolBuffer = ''
       let textBuffer = ''
       let toolSeen = false
+      let messageStopped = false
       let contentBlocks = 0
       let lastPartialAt = Number.NEGATIVE_INFINITY
       const blockTypes = new Map<number, string>()
@@ -894,6 +900,8 @@ class AnthropicProvider implements ModelProvider {
           ) {
             textBuffer += event.delta.text
           }
+        } else if (event.type === 'message_stop') {
+          messageStopped = true
         } else if (event.type === 'message_delta') {
           if (typeof event.delta?.stop_reason === 'string')
             stopReason = event.delta.stop_reason
@@ -944,6 +952,12 @@ class AnthropicProvider implements ModelProvider {
       if (stopReason === 'max_tokens') {
         throw new ProviderError(
           `Anthropic output was truncated at max_tokens (LLM_MAX_TOKENS=${this.configuration.LLM_MAX_TOKENS})`,
+          'PROVIDER_ERROR',
+        )
+      }
+      if (!messageStopped) {
+        throw new ProviderError(
+          'Anthropic stream ended before message_stop',
           'PROVIDER_ERROR',
         )
       }
